@@ -471,3 +471,34 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 **Notes:**
 **Next step:**
 ---
+
+## CP3b — validator function and consensus (STEP 6)
+**Date:** 2026-09-05
+**Status:** DONE
+
+**What was done**
+- Replaced the STEP 5 scaffold with the real validator and wired it via `gl.vm.run_nondet_unsafe(leader_fn, validator_fn)` (canonical `gl.vm.` spelling — see CP3a deviation note).
+- **How the validator derives its own answer** (the project's core technical claim): `validator_fn` receives the leader's result as a `gl.vm.Result`; if it is not `gl.vm.Return` (the leader errored) the validator returns `False` immediately. It then **runs the same fetch-and-judge procedure the leader ran — `_adjudicate_leader(mandate_text, action_facts)` — against its own live `gl.nondet.web.get()` fetch of the merchant URL and its own LLM call**, producing its own independent verdict. It trusts the leader's output for nothing except comparison. Any error inside the validator counts as Disagree (`run_nondet_unsafe` semantics), which is the safe direction: no consensus, no settlement.
+- **Fields compared (D4 exactly):** `within_mandate` is compared **exactly** (`bool` equality); `clause_violated` is compared **semantically** — two nulls agree, exactly one null disagrees, and two non-null quotes go through LLM-based comparative judgment (`_same_clause_semantically`, the docs' Pattern 3, with a `CLAUSE-EQUIVALENCE-CHECK` prompt asking whether two quotes refer to the same clause of the same mandate; an unanswerable comparison returns Disagree). `severity` and `reasoning` are stored for the UI but **never compared**. If either side produced a failure marker, the validator agrees only on an identical failure — `resolve()` then reverts cleanly (D15) rather than settling on a network error.
+- 11 tests in `tests/direct/test_resolve_validator.py`, using `direct_vm.run_validator()` per the handover: agreement with a correct leader; agreement on identical failure markers; **rejection of a leader verdict whose `within_mandate` is flipped**; **the mock-swap disagreement test** (web mock swapped between `resolve()` and `run_validator()` so the validator's own re-fetch sees a different listing and legitimately disagrees); leader-error rejection; malformed-leader-JSON rejection; one-sided clause rejection; semantic comparison both ways (paraphrase agrees, different clause disagrees); severity/reasoning differences do NOT break agreement; unanswerable clause check disagrees.
+
+**Evidence**
+- `PYTHONIOENCODING=utf-8 genvm-lint check contracts/mandate_guard.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed` / `Contract: MandateGuard` / `Methods: 10 (6 view, 4 write)`.
+- `PYTHONIOENCODING=utf-8 pytest tests/direct/ -q` → **`92 passed in 1.86s`** (81 pre-existing untouched + 11 new).
+
+**Blockers**
+- none
+
+**Question for PM**
+- none
+
+**Deviations from the roadmap**
+- Two test-authoring mistakes caught and fixed before commit, recorded for honesty: (1) five tests initially called `run_validator()` before any `resolve()` had captured a validator; (2) the mock-swap test initially appended a second `mock_llm` without clearing the first — mock matching is first-match-wins, so the "swapped" mock never fired. Also: `_adjudicate_validator` accepts the leader result as either a JSON string (what the real leader emits) or an already-decoded dict (what `run_validator(leader_result=...)` injects); tests forge verdicts as JSON strings to mirror the real path.
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---

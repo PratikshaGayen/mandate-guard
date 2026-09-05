@@ -176,6 +176,73 @@ def _adjudicate_leader(mandate_text: str, action_facts: dict) -> str:
     return json.dumps(verdict, sort_keys=True)
 
 
+def _same_clause_semantically(clause_a, clause_b) -> bool:
+    """D4: `clause_violated` is compared semantically, never byte-exact.
+
+    Two nulls agree; exactly one null disagrees; two non-null quotes are
+    compared by LLM-based comparative judgment (equivalence-principle docs,
+    Pattern 3). An unanswerable comparison disagrees — the safe direction.
+    """
+    a = clause_a or ""
+    b = clause_b or ""
+    if a == "" and b == "":
+        return True
+    if a == "" or b == "":
+        return False
+    task = (
+        "CLAUSE-EQUIVALENCE-CHECK: two independent adjudicators each quoted the "
+        "mandate clause that was violated. Decide whether the two quotes refer to "
+        "the same clause of the same mandate (paraphrases of the same clause count "
+        "as the same; different clauses do not).\n"
+        'First quote: "' + a + '"\n'
+        'Second quote: "' + b + '"\n'
+        'Respond ONLY with JSON: {"same": bool}'
+    )
+    res = gl.nondet.exec_prompt(task, response_format="json")
+    if not isinstance(res, dict) or not isinstance(res.get("same"), bool):
+        return False
+    return res["same"]
+
+
+def _adjudicate_validator(leader_result, mandate_text: str, action_facts: dict) -> bool:
+    """Independently re-fetch and re-derive, then compare per D4.
+
+    The validator runs the same fetch-and-judge procedure the leader ran, but
+    against *its own* live fetch and *its own* LLM call. It trusts the leader's
+    output for nothing except comparison. Any error inside it counts as
+    Disagree (run_nondet_unsafe semantics) — the safe direction: no consensus,
+    no settlement.
+    """
+    if not isinstance(leader_result, gl.vm.Return):
+        return False  # leader errored (UserError/VMError) — reject
+    raw = leader_result.calldata
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            leader_verdict = json.loads(raw)
+        except ValueError:
+            return False
+    elif isinstance(raw, dict):
+        leader_verdict = raw
+    else:
+        return False
+    derived_json = _adjudicate_leader(mandate_text, action_facts)
+    derived_verdict = json.loads(derived_json)
+    if "error" in leader_verdict or "error" in derived_verdict:
+        # Agree on failure only if both saw exactly the same failure;
+        # resolve() then reverts cleanly (D15) rather than settling.
+        return leader_verdict == derived_verdict
+    # D4 field comparison:
+    if bool(leader_verdict.get("within_mandate")) != bool(
+        derived_verdict.get("within_mandate")
+    ):
+        return False  # compared exactly
+    return _same_clause_semantically(
+        leader_verdict.get("clause_violated"), derived_verdict.get("clause_violated")
+    )
+
+
 class MandateGuard(gl.Contract):
     mandates: TreeMap[str, Mandate]
     actions: TreeMap[str, Action]
@@ -390,16 +457,7 @@ class MandateGuard(gl.Contract):
             return _adjudicate_leader(mandate_text, action_facts)
 
         def validator_fn(leader_result) -> bool:
-            # STEP 5 scaffold, replaced by the independently re-deriving
-            # validator in STEP 6 (D4). For now: reject anything that is not a
-            # successful Return carrying a valid verdict JSON.
-            if not isinstance(leader_result, gl.vm.Return):
-                return False
-            try:
-                json.loads(leader_result.calldata)
-            except ValueError:
-                return False
-            return True
+            return _adjudicate_validator(leader_result, mandate_text, action_facts)
 
         result_json = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
