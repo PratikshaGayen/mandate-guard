@@ -112,6 +112,12 @@ The four open questions from `README.md`. PM rulings are provisional defaults ch
 | D2 | Bond sizing | Operator bond ≥ the mandate spend ceiling, 1:1, posted at `register_mandate` | Operator downside at least equals the principal exposure. Simplest defensible rule |
 | D3 | Frivolous-challenge deterrence | Challenger deposit = 10% of bond, forfeited to the operator on a failed challenge; one open challenge per action | This is the mechanism `README.md` already names; the cap prevents challenge spam |
 | D4 | Equivalence principle fields | Compare `within_mandate` **exactly**; compare `clause_violated` **semantically**; exclude `severity` and `reasoning` from consensus | Fewest compared fields is safest for consensus, as the plan itself notes. See Section 5 |
+| D5 | Demo listing URL | Primary is a page we control (GitHub Pages), plus one genuinely third-party page proving real-web reads, plus a fallback. Self-hosting disclosed in the submission | Real merchant sites bring bot detection, moving prices, and JS rendering, and may look different by judging on 25 Sep. The mechanism demonstrated is identical — validators still perform a genuine live fetch of a real public URL |
+| D6 | Challenger incentive | **Do not fix in code.** Name it honestly in the pitch instead | A failed challenge loses the deposit; a successful one only returns it — net zero upside, real downside, so a rational third party never challenges. A bounty splitting the slashed bond is real scope against 12 remaining days. `pitch.md`'s rewrite notes demand "an admission of something unresolved" — this is the sharpest candidate. Carried to STEP 13 |
+
+**D1–D5 confirmed implementable at CP1** (2026-09-05), evidence in `DESIGN_DECISIONS.md`. Three completions locked at PM review: successful-challenge deposit returns to the challenger; the spend ceiling is a principal-declared `u256` wei parameter, never parsed from the mandate prose; `challenge` requires the exact deposit — which obliges a **view method exposing `required_deposit`** (STEP 4), with the frontend reading it rather than computing it (STEP 10).
+
+**Known seam to disclose, not fix:** the mandate prose caps spend in USD ("$250") while the bond and ceiling are GEN-wei, with no formal link between them — so D2's "operator downside ≥ principal exposure" holds only nominally. Inherent to the original design (natural-language mandate + on-chain bond). Fine for the demo; state it plainly in the repo README at STEP 12 rather than leaving a judge to find it.
 
 ---
 

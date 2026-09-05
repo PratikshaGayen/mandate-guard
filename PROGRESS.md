@@ -254,11 +254,11 @@ STEP 1's literal exit criterion (`AGENT_INSTRUCTIONS.md` sub-step 7) says the in
 - None.
 
 ---
-### PM review — do not fill in
-**Reviewed:**
-**Verdict:**
-**Notes:**
-**Next step:**
+### PM review
+**Reviewed:** 2026-09-05
+**Verdict:** APPROVED
+**Notes:** STEP 1 declared complete on the strength of the studionet deploy (5/5 validators AGREE, status ACCEPTED) — that is what the exit criterion exists to prove. The vendor's own sample-suite bugs are recorded and deliberately not fixed; `football_bets.py` and its tests get deleted once Mandate Guard's contract exists, so fixing them is scope creep against a 17 Sep deadline. Retroactively covers CP0 and CP0-B, both approved verbally in session ("go ahead with both" — Ollama path and conftest patch).
+**Next step:** STEP 2 — Design lock (CP1)
 ---
 
 ## CP1 — Design lock (STEP 2)
@@ -300,9 +300,23 @@ STEP 1's literal exit criterion (`AGENT_INSTRUCTIONS.md` sub-step 7) says the in
 - Two artifacts beyond `DESIGN_DECISIONS.md`, both mandated by the D5 ruling and verification duty, neither contract code: `demo-listing/index.html` (the page source, published to a new public repo `PratikshaGayen/mandate-guard-demo` per the ruling) and `scratch/url_probe.py` (disposable probe contract deployed to studionet to prove URLs are reachable from validator infrastructure, not just this machine — local curl alone could not discharge that obligation). No STEP 3 work started.
 
 ---
-### PM review — do not fill in
-**Reviewed:**
-**Verdict:**
+### PM review
+**Reviewed:** 2026-09-05
+**Verdict:** APPROVED
 **Notes:**
-**Next step:**
+PM independently verified the two load-bearing claims rather than accepting the summary: (a) the transaction-context docs page does state time is deterministic and pinned to the transaction timestamp, including the staleness caveat, as quoted; (b) the primary demo URL returns HTTP 200 and serves exactly the stated fares (Atlas Air AA-281, Basic Saver $180.00 NON-REFUNDABLE, Flex Economy $220.00 FULLY REFUNDABLE). Append-only integrity independently confirmed via `git diff c3e71c6..HEAD -- PROGRESS.md` → 46 insertions, **0 deletions**; the self-reported repair was accurate. Footprint is correctly minimal and contains no contract code, as STEP 2 required.
+
+Both deviations were pre-authorised by the D5 ruling and the validator-side verification duty. The probe-contract approach was the right call — local `curl` genuinely could not discharge "reachable from validator infrastructure," and proving it via consensus is stronger evidence than the ruling asked for.
+
+Rulings on the three flagged items — **all three CONFIRMED as locked**:
+1. **Successful-challenge deposit returns to the challenger.** Confirmed. Any other rule is confiscation and would make challenging irrational.
+2. **Spend ceiling principal-declared in wei, not parsed from prose.** Confirmed, and this is the stronger choice: parsing a number out of natural language would put an LLM call on the registration path, adding a consensus surface and making bond sizing non-deterministic, for no benefit.
+3. **`challenge` requires the exact deposit.** Confirmed — but it carries a consequence to implement: if the amount must be exact, callers must be able to read it. **New requirement: expose a view method returning the exact `required_deposit` for an action** (STEP 4), and the frontend must populate the challenge form from it, never compute it client-side (STEP 10).
+
+Two items PM is adding to the record (see `PROJECT_ROADMAP.md` §4, D6 and §8):
+- **D6 — challenger incentive gap.** As designed, a failed challenge loses the deposit and a successful one merely returns it: net zero upside, real downside, so a rational third party never challenges. Only the principal is motivated. This is a genuine hole in the original `README.md` economics, not something the agent introduced. **Ruling: do not fix it in code** — a bounty splitting the slashed bond is real scope against 12 remaining days. Instead, name it honestly. `pitch.md`'s own rewrite notes demand "at least one admission of something unresolved," and this is the sharpest, most credible candidate. Carried to STEP 13.
+- **USD/GEN seam.** The mandate prose caps spend at "$250" while the bond and ceiling are GEN-wei; the two are not formally linked, so D2's "operator downside ≥ principal exposure" holds only nominally. Inherent to the original design (natural-language mandate + on-chain bond), fine for the demo, but it must be stated plainly in the repo README rather than left for a judge to find.
+
+Minor, non-blocking: probe recorded 2806 bytes for the demo page, local `curl` reports 2814 — almost certainly CRLF/LF line-ending difference, not a page edit. Worth a re-probe before the STEP 11 rehearsal to confirm the freeze held.
+**Next step:** STEP 3 — Storage schema and `register_mandate` (CP2a). Carry forward: the `required_deposit` view method, D6, and the USD/GEN seam note.
 ---
