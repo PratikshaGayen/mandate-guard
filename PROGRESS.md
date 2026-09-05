@@ -550,3 +550,38 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 
 **Next step:** **FIX-1 + STEPS 8-11 as one packet** - `HANDOVER_STEP8-11.md`. CP4/CP5a/CP5b/CP6 are each written here as they complete; the agent works straight through and stops once, after CP6. STEPS 12-13 are deliberately excluded - publishing and submitting are outward-facing and need explicit approval first.
 ---
+
+## FIX-1 — D16 double-slash fixed (ahead of CP4)
+**Date:** 2026-09-05
+**Status:** DONE
+
+**What was done**
+- **`challenge()` now rejects when `mandate.bond_intact` is `False`** (`UserError("Bond not intact: this mandate's bond is already slashed, no new challenges (D16)")`). Closes the entrance: a mandate whose bond is gone has nothing left to secure a challenge. The mandate is now fetched before the open-challenge and window checks, which also de-duplicates the later fetch.
+- **`resolve()` never pays the bond leg twice.** On an out-of-mandate verdict with `bond_intact == False` (a challenge opened before the slash still in flight), the bond leg is **skipped entirely**, the challenger's deposit is **still returned in full**, and the verdict and states are still recorded. The skipped leg is recorded explicitly in `payouts_json` with `purpose: "bond_already_slashed_not_paid"` and `amount_wei: 0`, so the UI and verdict view tell the truth instead of showing a silent nothing.
+- **`_coerce_verdict` clamps severity into 0–100** (was: a negative severity reached `u256(int(...))` in settlement and raised *after* `emit_transfer` had been called — no money moved since the tx reverts whole, but the failure was unexplained).
+- 5 regression tests added, including the payout-sum invariant that would have caught D16.
+
+**Evidence**
+- `PYTHONIOENCODING=utf-8 pytest tests/direct/test_fix1_double_slash.py -v` → `5 passed in 0.19s`:
+  - second challenge rejected at `challenge()` after a slash ("Bond not intact");
+  - in-flight case: two challenges opened before either resolves, both out-of-mandate → **bond paid exactly once**, both deposits returned, second verdict recorded with `payouts` purposes exactly `["bond_already_slashed_not_paid", "deposit_returned_to_challenger"]`, skipped leg `amount_wei == 0` to the principal;
+  - payout-sum invariant: `total_out == BOND_WEI + 2 * DEPOSIT_WEI` and `total_out <= total_in` — pasted values: total emitted across the scenario = `250e18 + 25e18 + 25e18 = 300e18 wei`, exactly bond + both deposits, never a wei more;
+  - severity 500 → stored as 100; severity −5 → stored as 0.
+- `PYTHONIOENCODING=utf-8 genvm-lint check contracts/mandate_guard.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed`. Full suite below in CP4.
+
+**Blockers**
+- none
+
+**Question for PM**
+- none
+
+**Deviations from the roadmap**
+- none
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---

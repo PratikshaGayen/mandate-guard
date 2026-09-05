@@ -144,6 +144,11 @@ def _coerce_verdict(result) -> dict:
     sev = result.get("severity")
     if isinstance(sev, bool) or not isinstance(sev, (int, float)):
         raise ValueError("severity is not a number")
+    severity = int(sev)
+    if severity < 0:
+        severity = 0
+    elif severity > 100:
+        severity = 100
     reasoning = result.get("reasoning")
     if reasoning is None:
         reasoning = ""
@@ -152,7 +157,7 @@ def _coerce_verdict(result) -> dict:
     return {
         "within_mandate": within,
         "clause_violated": clause,
-        "severity": int(sev),
+        "severity": severity,
         "reasoning": reasoning,
     }
 
@@ -388,6 +393,14 @@ class MandateGuard(gl.Contract):
     @gl.public.write.payable
     def challenge(self, action_id: str) -> str:
         action = self._get_action_or_raise(action_id)
+        mandate = self._get_mandate_or_raise(action.mandate_id)
+        # D16: a mandate whose bond is already slashed has nothing left to
+        # secure a challenge — taking a deposit against it would be taking
+        # money for a promise the contract cannot keep.
+        if not mandate.bond_intact:
+            raise gl.vm.UserError(
+                "Bond not intact: this mandate's bond is already slashed, no new challenges (D16)"
+            )
         # Note: open_challenge_id is never cleared, so in this v1 an action can
         # be challenged exactly once ever — a resolved action is adjudicated
         # and must not be re-litigated. The error text below names the weaker
@@ -400,7 +413,6 @@ class MandateGuard(gl.Contract):
         if now >= int(action.challenge_closes_at):
             raise gl.vm.UserError("Window closed: the challenge window has elapsed (D1)")
 
-        mandate = self._get_mandate_or_raise(action.mandate_id)
         required_deposit = int(mandate.bond_wei) // 10
         if int(gl.message.value) != required_deposit:
             raise gl.vm.UserError(
@@ -484,13 +496,25 @@ class MandateGuard(gl.Contract):
             # challenger's deposit is returned in full. (Deliberately the full
             # bond regardless of the size of the violation — README.md's rule,
             # locked at CP3c review. severity is displayed, never scales money.)
-            if int(mandate.bond_wei) > 0:
+            # D16: a challenge opened *before* a slash may still be in flight
+            # when it lands. If the bond is already gone, the bond leg is
+            # skipped — never paid twice — and the skip is recorded so the UI
+            # tells the truth. The challenger is still made whole.
+            if mandate.bond_intact and int(mandate.bond_wei) > 0:
                 gl.get_contract_at(mandate.principal).emit_transfer(value=mandate.bond_wei)
                 payouts.append(
                     {
                         "recipient": mandate.principal.as_hex,
                         "amount_wei": int(mandate.bond_wei),
                         "purpose": "bond_slashed_to_principal",
+                    }
+                )
+            elif not mandate.bond_intact:
+                payouts.append(
+                    {
+                        "recipient": mandate.principal.as_hex,
+                        "amount_wei": 0,
+                        "purpose": "bond_already_slashed_not_paid",
                     }
                 )
             if int(challenge.deposit_wei) > 0:
