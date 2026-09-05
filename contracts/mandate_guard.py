@@ -62,6 +62,8 @@ class Challenge:
     verdict_clause_violated: str
     verdict_severity: u256
     verdict_reasoning: str
+    resolved_at: u256
+    payouts_json: str
 
 
 # Action states — the five situations that must not collapse into each other.
@@ -75,6 +77,103 @@ ACTION_RESOLVED_IN = "RESOLVED_WITHIN_MANDATE"  # verdict: challenger loses depo
 CHALLENGE_OPEN = "OPEN"
 CHALLENGE_UPHELD = "RESOLVED_UPHELD"  # action was out of mandate; deposit returned
 CHALLENGE_REJECTED = "RESOLVED_REJECTED"  # action within mandate; deposit forfeited
+
+
+# ── Non-deterministic adjudication helpers ────────────────────────────────────
+# These run inside the non-deterministic block only. They never raise: every
+# failure becomes a JSON marker {"error": "<category>"}, so both leader and
+# validator can agree on "we could not adjudicate" and resolve() can revert
+# with a clean UserError (D15) instead of leaving consensus in a failed state.
+
+def _fetch_listing_or_error(url: str) -> tuple:
+    """Fetch a listing page. Returns (text, "") on success or ("", "<category>")."""
+    try:
+        res = gl.nondet.web.get(url)
+    except Exception:
+        return "", "fetch_failed"
+    status = int(res.status)
+    body = res.body
+    text = ""
+    if body is not None:
+        text = body.decode("utf-8", errors="replace")
+    if status < 200 or status >= 300 or len(text.strip()) == 0:
+        return "", "unusable_page"
+    return text, ""
+
+
+def _build_verdict_prompt(mandate_text: str, action_facts: dict, listing_text: str) -> str:
+    return (
+        "You are adjudicating whether an agent's recorded purchase stayed within a "
+        "spending mandate. Judge every clause of the mandate, both numeric limits and "
+        "judgment calls.\n\n"
+        "MANDATE (plain English):\n" + mandate_text + "\n\n"
+        "RECORDED ACTION:\n"
+        "item: " + action_facts["item"] + "\n"
+        "price: " + action_facts["price"] + "\n"
+        "purchased at: " + action_facts["purchased_at"] + "\n"
+        "listing url: " + action_facts["merchant_url"] + "\n\n"
+        "LIVE LISTING CONTENT fetched from the listing url just now:\n"
+        + listing_text + "\n\n"
+        "If a clause was violated, quote it exactly as it appears in the mandate.\n"
+        "Respond ONLY with JSON in exactly this shape:\n"
+        '{"within_mandate": bool, "clause_violated": str or null, "severity": int, '
+        '"reasoning": str}\n'
+        "severity scale: 0 fully compliant, 1 trivial deviation, 2 clear violation of "
+        "one clause, 3 egregious violation.\n"
+        "It is mandatory that you respond only using the JSON format above, nothing "
+        "else. Your output must be only JSON without any formatting prefix or suffix."
+    )
+
+
+def _coerce_verdict(result) -> dict:
+    """Validate and normalise the LLM's verdict, or raise ValueError."""
+    if isinstance(result, str):
+        s = result.strip().replace("```json", "").replace("```", "").strip()
+        start, end = s.find("{"), s.rfind("}") + 1
+        if start < 0 or end <= start:
+            raise ValueError("no JSON object found")
+        result = json.loads(s[start:end])
+    if not isinstance(result, dict):
+        raise ValueError("verdict is not an object")
+    within = result.get("within_mandate")
+    if not isinstance(within, bool):
+        raise ValueError("within_mandate is not a bool")
+    clause = result.get("clause_violated")
+    if clause is not None and not isinstance(clause, str):
+        raise ValueError("clause_violated is not a string or null")
+    sev = result.get("severity")
+    if isinstance(sev, bool) or not isinstance(sev, (int, float)):
+        raise ValueError("severity is not a number")
+    reasoning = result.get("reasoning")
+    if reasoning is None:
+        reasoning = ""
+    if not isinstance(reasoning, str):
+        reasoning = str(reasoning)
+    return {
+        "within_mandate": within,
+        "clause_violated": clause,
+        "severity": int(sev),
+        "reasoning": reasoning,
+    }
+
+
+def _adjudicate_leader(mandate_text: str, action_facts: dict) -> str:
+    """Fetch the live listing and judge the recorded action against the mandate.
+
+    Returns the verdict as a JSON string with sorted keys (Pattern 6), or an
+    {"error": "<category>"} marker on any failure (D15): fetch_failed,
+    unusable_page, or llm_invalid_output.
+    """
+    listing_text, fetch_error = _fetch_listing_or_error(action_facts["merchant_url"])
+    if fetch_error != "":
+        return json.dumps({"error": fetch_error}, sort_keys=True)
+    task = _build_verdict_prompt(mandate_text, action_facts, listing_text)
+    try:
+        result = gl.nondet.exec_prompt(task, response_format="json")
+        verdict = _coerce_verdict(result)
+    except Exception:
+        return json.dumps({"error": "llm_invalid_output"}, sort_keys=True)
+    return json.dumps(verdict, sort_keys=True)
 
 
 class MandateGuard(gl.Contract):
@@ -254,6 +353,8 @@ class MandateGuard(gl.Contract):
             verdict_clause_violated="",
             verdict_severity=u256(0),
             verdict_reasoning="",
+            resolved_at=u256(0),
+            payouts_json="",
         )
 
         action.open_challenge_id = challenge_id
@@ -264,6 +365,53 @@ class MandateGuard(gl.Contract):
         self.challenge_ids_by_action[action_id] = json.dumps(id_list)
 
         return challenge_id
+
+    @gl.public.write
+    def resolve(self, challenge_id: str) -> dict:
+        challenge = self._get_challenge_or_raise(challenge_id)
+        if challenge.state != CHALLENGE_OPEN:
+            raise gl.vm.UserError(
+                "Already resolved: only an OPEN challenge can be resolved (D14)"
+            )
+        action = self._get_action_or_raise(challenge.action_id)
+        mandate = self._get_mandate_or_raise(challenge.mandate_id)
+
+        # Storage objects cannot be used inside the non-deterministic block —
+        # copy the adjudication inputs out first (roadmap §5).
+        mandate_text = mandate.text
+        action_facts = {
+            "item": action.item,
+            "price": action.price,
+            "purchased_at": action.purchased_at,
+            "merchant_url": action.merchant_url,
+        }
+
+        def leader_fn() -> str:
+            return _adjudicate_leader(mandate_text, action_facts)
+
+        def validator_fn(leader_result) -> bool:
+            # STEP 5 scaffold, replaced by the independently re-deriving
+            # validator in STEP 6 (D4). For now: reject anything that is not a
+            # successful Return carrying a valid verdict JSON.
+            if not isinstance(leader_result, gl.vm.Return):
+                return False
+            try:
+                json.loads(leader_result.calldata)
+            except ValueError:
+                return False
+            return True
+
+        result_json = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+
+        verdict = json.loads(result_json)
+        if "error" in verdict:
+            # D15: a failed fetch or unusable verdict must not settle. Nothing
+            # has been mutated — the caller may retry when the page is reachable.
+            raise gl.vm.UserError(
+                "Resolve failed: " + verdict["error"] + "; no state changed"
+            )
+
+        return verdict
 
     @gl.public.view
     def required_deposit(self, action_id: str) -> int:
