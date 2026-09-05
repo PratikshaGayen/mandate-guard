@@ -355,9 +355,20 @@ Minor, non-blocking: probe recorded 2806 bytes for the demo page, local `curl` r
 - `scratch/schema_probe/` probe contracts were created and run purely to root-cause the storage bug above; they are not Mandate Guard code and are not imported by anything. No other deviations.
 
 ---
-### PM review — do not fill in
-**Reviewed:**
-**Verdict:**
+### PM review
+**Reviewed:** 2026-09-05
+**Verdict:** APPROVED
 **Notes:**
-**Next step:**
+Independently re-ran both exit criteria rather than accepting the report: `genvm-lint check contracts/mandate_guard.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed` / `Contract: MandateGuard` / `Methods: 3 (2 view, 1 write)`, no warnings of our own; `pytest tests/direct/ -q` → `53 passed in 1.52s`. Append-only integrity confirmed again (0 deletions). Claims accurate.
+
+The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__init__` breaks storage-desc identity once any dataclass-valued `TreeMap` is declared" — and then landing on the vendor's already-proven lazy-default pattern rather than inventing a workaround — is exactly right. The comment in `__init__` explaining *why* the containers are deliberately unconstructed is the thing that stops a future contributor "fixing" it back into a broken state. Schema review: lifecycle coverage is genuine, the five action states stay distinct, `required_deposit` is computable (action → mandate → `bond_wei // 10`), and `Action.open_challenge_id` gives STEP 4 a clean one-open-challenge guard. Keeping the verdict fields flat on `Challenge` rather than nesting a dataclass was the correct risk call. `test_rejected_registration_stores_nothing` was a good instinct — nobody asked for it and partial-state-on-failure is a real class of bug.
+
+**Ruling on the flagged question — reject `principal == operator`.** You were right not to add an unspecified restriction unasked; that discipline is what I want. But this one is defending an invariant the design already states rather than adding scope: `README.md` rests on "the parties are adversaries… neither one's backend gets to grade the homework." If both roles are the same address, a slash moves funds from an address to itself — costing nothing — while the contract still records "out of mandate, bond slashed." That is a materially misleading on-chain record for a contract whose entire product is trustworthy records. Reject it in `register_mandate` with a `UserError`, and add a test.
+
+**New finding from PM review — unknown-ID lookups raise a bare `KeyError`.** I probed `get_mandate("m-999999")` on a fresh deployment: it raises a bare `KeyError` with an empty message, not a `gl.vm.UserError`. That violates standing rule 9 (never let a bare Python exception escape — it breaks GenVM error handling), gives the frontend nothing to display, and matters much more at STEP 4, where `record_action` and `challenge` both take caller-supplied IDs and will hit the same path. Fix at STEP 4 and, importantly, **establish a single lookup helper** (e.g. `_get_mandate_or_raise(mandate_id)` / `_get_action_or_raise(action_id)`) before the pattern proliferates across three more methods. Add a test asserting the `UserError` for each lookup. Not a CP2a blocker — the step's stated exit criteria were met — but it must not survive STEP 4.
+
+**Forward-looking note, not a change request:** value comparisons currently go through `int(...)` casts (`int(gl.message.value) < int(spend_ceiling_wei)`). Harmless here, since Python ints are arbitrary-precision and these are comparisons only. At STEP 7, where money actually moves, keep the arithmetic `u256`-native and avoid round-tripping through `int` — that is where a truncation or sign bug would be expensive and hard to see.
+
+**Housekeeping:** `scratch/schema_probe/` is currently untracked. Either commit it as the evidence it is, or drop it — but it must not ship in the public repo at STEP 12; add `scratch/` to `.gitignore` or clean it before publishing.
+**Next step:** STEP 4 — `record_action` and `challenge` (CP2b). Carry into it: reject `principal == operator`; the `_get_*_or_raise` lookup helpers replacing bare `KeyError`; and the `required_deposit` view method from the CP1 review.
 ---
