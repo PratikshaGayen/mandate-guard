@@ -415,8 +415,23 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 
 ---
 ### PM review — do not fill in
-**Reviewed:**
-**Verdict:**
+**Reviewed:** 2026-09-05 (PM)
+**Verdict:** **APPROVED.**
+
+**Independently verified, not taken on report:**
+- `PYTHONIOENCODING=utf-8 genvm-lint check contracts/mandate_guard.py` -> `Lint passed (3 checks)` / `Validation passed` / `Methods: 9 (6 view, 3 write)`. Clean.
+- `PYTHONIOENCODING=utf-8 pytest tests/direct/ -q` -> **`73 passed in 2.01s`**. Matches the claim; the 53 pre-existing tests are intact.
+- Read the contract diff in full. All three carry-forwards are genuinely done: `principal == operator` rejected; every lookup - including the pre-existing `get_mandate` path - routed through the `_get_*_or_raise` helpers, with no bare `KeyError` remaining; `required_deposit` returns `bond_wei // 10`.
+- D9 is implemented as ruled: `challenge_closes_at` is derived from the pinned clock only, and `purchased_at` appears exclusively as stored evidence and in view output. Confirmed by reading `record_action`, not by trusting the entry.
+
 **Notes:**
-**Next step:**
+- **`challenge()` returning `challenge_id` - accepted.** Flagged honestly as an unspecified addition; it is the right call. The UI needs the id and the alternative is a lookup round-trip. Consistent with `register_mandate` and `record_action` returning theirs.
+- **`open_challenge_id` is never cleared, so an action can be challenged only once ever, not merely once at a time.** Reading the code, this is the actual behaviour and it is correct - a resolved action has been adjudicated and should not be re-litigated - but the field name and the error string "one open challenge per action" both describe a weaker rule than the code enforces. **No code change; state what it does in the STEP 7 view method and in the README at STEP 12.** Naming that oversells permissiveness is the kind of thing a judge reads as a bug.
+- **D10 handled exactly as asked.** The direct-mode half was verified rather than assumed (views do see the pinned clock), the branch taken is correct under either outcome, and the on-chain half is reported as blocked with evidence rather than quietly skipped. The blocker diagnosis is sound: a re-deploy of the known-good STEP 2 probe failing identically distinguishes a network fault from a code fault, and that is the right control to have run.
+- studionet deploy failure carried to STEP 8, along with deploying the view-clock probe.
+- `scratch/` exclusion from the public repo carried forward to STEP 12. It now also contains `scratch/pm_probe/`.
+
+**PM work done on top of this review, so the agent doesn't hit it cold at STEP 7:** probed the value path directly and found that **`emit_transfer` is a silent no-op in direct mode** (`PostMessage` is unhandled - it neither transfers nor raises) and **`self.balance` reads `0` even after a payable call carrying value**. STEP 7's stated exit criterion, "both settlement directions verified by balance assertions", is therefore not achievable in direct mode. Also verified the two workarounds: `direct_vm._gl_call_hook` captures the `PostMessage` with recipient, exact wei and `on`, and `direct_vm.run_validator(leader_result=..., leader_error=...)` exists for the STEP 6 disagreement tests. All of it is written into the handover with the probe output. Recorded as **D11**; **D12-D15** lock the settlement schema, the settlement arithmetic, `resolve()`'s caller and double-resolution guard, and the revert-on-failed-fetch rule.
+
+**Next step:** **STEPS 5-7 as one packet** - `HANDOVER_STEP5-8.md`. CP3a/CP3b/CP3c are each still written to this file as they complete, but the agent works straight through them and stops once, after CP3c. STEP 8 (CP4) follows only after that review, and is conditional on studionet's deploy path recovering.
 ---
