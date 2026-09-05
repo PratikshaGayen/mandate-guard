@@ -466,10 +466,10 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 
 ---
 ### PM review — do not fill in
-**Reviewed:**
-**Verdict:**
-**Notes:**
-**Next step:**
+**Reviewed:** 2026-09-05 (PM)
+**Verdict:** **APPROVED.**
+**Notes:** D15 is implemented the right way round - the leader never raises, each failure becomes an `{"error": category}` marker, and `resolve()` converts it into a `UserError` revert *before* any mutation, so a failed fetch leaves state and money untouched and the caller can retry. Restructuring the failure handling into a fetch helper that returns a category, rather than layering exceptions, was the correct call and was made without being asked. Verdict JSONs for both demo actions are pasted rather than described, as required.
+**Next step:** Continued into STEP 6 in the same packet, as instructed.
 ---
 
 ## CP3b — validator function and consensus (STEP 6)
@@ -497,10 +497,10 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 
 ---
 ### PM review — do not fill in
-**Reviewed:**
-**Verdict:**
-**Notes:**
-**Next step:**
+**Reviewed:** 2026-09-05 (PM)
+**Verdict:** **APPROVED.**
+**Notes:** The validator independently re-fetches and re-derives rather than shape-checking the leader's output, which is what the GenLayer docs require for settlement logic and the single most important correctness property in this project. D4's comparison surface is honoured exactly: `within_mandate` strictly, `clause_violated` semantically, `severity` and `reasoning` excluded. Resolving an unanswerable clause-equivalence check to *disagree* is the right default - it fails towards no consensus rather than towards a settlement. The mock-swap test, where the validator's own fetch sees a different listing and it legitimately disagrees, is the evidence that the mechanism is real rather than decorative. Reporting the two self-caught test bugs was the right instinct; keep doing that.
+**Next step:** Continued into STEP 7 in the same packet, as instructed.
 ---
 
 ## CP3c — settlement: slash and release (STEP 7)
@@ -535,8 +535,18 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 
 ---
 ### PM review — do not fill in
-**Reviewed:**
-**Verdict:**
+**Reviewed:** 2026-09-05 (PM)
+**Verdict:** **APPROVED, with one required fix before STEP 8 (FIX-1 / D16).**
+
+**Independently verified:** `pytest tests/direct/ -q` -> **`99 passed in 2.58s`**; `genvm-lint check contracts/mandate_guard.py` -> `Lint passed (3 checks)` / `Validation passed` / `Methods: 10 (6 view, 4 write)`. Read `resolve()` and `challenge()` in full. D13's arithmetic is exactly as locked, D14's double-resolution guard is in place, and D12's payout record is written before return.
+
+**REQUIRED FIX - the bond can be paid out twice.** Found by reading `challenge()` and `resolve()` together; neither is wrong alone. `record_action` refuses new actions once `bond_intact` is `False`, but actions recorded *before* a slash stay `OPEN`, and **`challenge()` never checks `bond_intact`** - so it accepts a second deposit, still sized from the full unreduced `bond_wei`. That challenge resolving out of mandate calls `emit_transfer(value=mandate.bond_wei)` a second time. Every mandate's bond shares one contract balance, so the second payout comes out of a different principal's money. It is reachable in the demo scenario as designed - two actions on one mandate. Recorded as **D16**; both halves of the fix (entrance check in `challenge()`; skip-the-bond-leg in `resolve()` for the in-flight case, with the deposit still returned) plus three regression tests are specified in `HANDOVER_STEP8-11.md` section 2. This is not a criticism of the step: each method is individually correct against its own spec, and the defect exists only in their interaction.
+
 **Notes:**
-**Next step:**
+- **`gl.storage.copy_to_memory()` was not used** - `resolve()` reads `mandate.text` and the action fields into locals instead. For plain `str` fields that is very likely equivalent, and direct mode is happy, but direct mode is not GenVM. Not a change now; written up as an explicit thing to answer on the first real integration run at STEP 8, since a lazy storage proxy crossing into the nondet block would fail only there.
+- **`_coerce_verdict` accepts a negative `severity`**, which then reaches `u256(int(...))` *after* `emit_transfer` has been called. The whole transaction reverts so no money moves, but it fails unexplained at the worst possible moment. Clamp to 0-100; folded into FIX-1 as a minor.
+- **The E010 / `glvm` alias finding is genuinely useful** and correctly reported, including that the vendor's own `PatternTest.py` carries the same pre-existing failure.
+- **The honesty on D11 is exactly right.** "Payout intent verified, balances not moved" is what the entry says, and that phrasing must survive into the submission. STEP 8 is where it becomes real.
+
+**Next step:** **FIX-1 + STEPS 8-11 as one packet** - `HANDOVER_STEP8-11.md`. CP4/CP5a/CP5b/CP6 are each written here as they complete; the agent works straight through and stops once, after CP6. STEPS 12-13 are deliberately excluded - publishing and submitting are outward-facing and need explicit approval first.
 ---
