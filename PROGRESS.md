@@ -435,3 +435,39 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 
 **Next step:** **STEPS 5-7 as one packet** - `HANDOVER_STEP5-8.md`. CP3a/CP3b/CP3c are each still written to this file as they complete, but the agent works straight through them and stops once, after CP3c. STEP 8 (CP4) follows only after that review, and is conditional on studionet's deploy path recovering.
 ---
+
+## CP3a — resolve() leader function (STEP 5)
+**Date:** 2026-09-05
+**Status:** DONE
+
+**What was done**
+- Implemented the leader half of `resolve()`: storage inputs (mandate text; action item/price/`purchased_at`/`merchant_url`) are copied out of storage **before** the non-deterministic block (roadmap §5), the listing is fetched with `gl.nondet.web.get()` per `DESIGN_DECISIONS.md` §D5 (all demo URLs are static), and one LLM prompt carries all three inputs — mandate text, recorded action, fetched listing. The prompt asks for the exact verdict schema and the leader returns `json.dumps(verdict, sort_keys=True)` (Pattern 6).
+- `resolve()` is wired through `gl.vm.run_nondet_unsafe(leader_fn, validator_fn)`. **The validator in this commit is an explicitly-marked STEP 5 scaffold** (rejects non-`Return` leaders and unparseable verdict JSON only) — it is replaced by the independently re-deriving validator in CP3b; settlement does not exist yet.
+- D15 implemented: the leader **never raises** — every failure becomes a JSON marker `{"error": "<category>"}`, and `resolve()` turns it into a clean `gl.vm.UserError("Resolve failed: <category>; no state changed")` **before any mutation**, so state and money are untouched and the caller can retry. Categories: `fetch_failed` (unreachable), `unusable_page` (non-2xx or empty body), `llm_invalid_output` (malformed or schema-invalid LLM JSON — `_coerce_verdict` validates `within_mandate` bool, `clause_violated` str|null, severity numeric, reasoning str).
+- Wrote `tests/direct/test_resolve_leader.py`: both demo actions via `mock_web`/`mock_llm`, a prompt-content test (mandate + action + listing all present in the prompt), and all three D15 failure cases (unreachable, HTTP 500, empty page, plus two malformed-LLM variants) asserting the specific `UserError` and that the challenge stays `OPEN`.
+
+**Evidence**
+- `PYTHONIOENCODING=utf-8 genvm-lint check contracts/mandate_guard.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed` / `Contract: MandateGuard` / `Methods: 10 (6 view, 4 write)`. No warnings of ours. Note for the record: the **vendor's own `PatternTest.py` fails this linter** (W004 bare `Exception` raise, E010) — pre-existing vendor issues, not ours (the handover's "warnings not yours" clause covers exactly this).
+- **Actual verdict JSON produced for each demo action** (leader output, `sort_keys=True`):
+  - Compliant (Flex Economy $220.00, refundable):
+    `{"clause_violated": null, "reasoning": "Refundable Flex Economy booked at $220.00, within the $250 ceiling.", "severity": 0, "within_mandate": true}`
+  - Drifting (Basic Saver $180.00, non-refundable):
+    `{"clause_violated": "Prefer refundable fares over non-refundable ones, even if the refundable fare costs a bit more.", "reasoning": "Non-refundable Basic Saver booked at $180.00 although the refundable Flex Economy fare was available at $220.00, within the $250 ceiling.", "severity": 2, "within_mandate": false}`
+- `PYTHONIOENCODING=utf-8 pytest tests/direct/ -q` → **`81 passed in 1.65s`** (73 pre-existing untouched + 8 new).
+
+**Blockers**
+- none
+
+**Question for PM**
+- none
+
+**Deviations from the roadmap**
+- One lint-driven restructure worth recording: the linter's E010 rule (`gl.nondet.*` reachability) does not recognise the `import genlayer.gl.vm as glvm` alias that `PatternTest.py` uses — `glvm.run_nondet_unsafe(...)` leaves the nondet call unreachable from any "safe entry point" and fails lint. Spelling the call as `gl.vm.run_nondet_unsafe(...)` resolves it. The vendor's PatternTest carries this same latent failure (pre-existing, not ours).
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---
