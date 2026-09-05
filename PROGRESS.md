@@ -372,3 +372,51 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 **Housekeeping:** `scratch/schema_probe/` is currently untracked. Either commit it as the evidence it is, or drop it — but it must not ship in the public repo at STEP 12; add `scratch/` to `.gitignore` or clean it before publishing.
 **Next step:** STEP 4 — `record_action` and `challenge` (CP2b). Carry into it: reject `principal == operator`; the `_get_*_or_raise` lookup helpers replacing bare `KeyError`; and the `required_deposit` view method from the CP1 review.
 ---
+
+## CP2b — record_action and challenge (STEP 4)
+**Date:** 2026-09-05
+**Status:** DONE
+
+**What was done**
+- **Carry-forward (a):** `register_mandate` now rejects `principal == operator` with `gl.vm.UserError("Principal equals operator: ...")`, defending the adversarial-parties invariant. Test added.
+- **Carry-forward (b):** added `_get_mandate_or_raise` / `_get_action_or_raise` / `_get_challenge_or_raise`, raising `gl.vm.UserError("Unknown <kind> id: <id>")` instead of the bare `KeyError`. **Every** lookup is routed through them, including the existing `get_mandate` view and the new `get_action` / `get_challenge` / `required_deposit` views and both write methods. One test per helper, plus tests that `record_action` / `challenge` hit the same path with caller-supplied IDs.
+- **Carry-forward (c):** `required_deposit(action_id) -> int` view, resolving action → mandate → `bond_wei // 10` (D3). Returns the exact wei figure the exact-deposit rule requires; the frontend will read this at STEP 10.
+- **D8 — `record_action` with typed parameters**, locked signature exactly as handed over: `record_action(mandate_id, merchant_url, item, price, purchased_at) -> str`. `price` stored as a string (listing evidence, judged as text at STEP 5; never parsed). Only the mandate's registered operator may record (`gl.message.sender_address != mandate.operator` → `UserError`). Actions on a mandate with `bond_intact == False` are rejected — every recorded action must be backed by a live bond.
+- **D9 — window arithmetic never touches caller-supplied time.** `recorded_at` and `challenge_closes_at = recorded_at + mandate.challenge_window_seconds` come from the transaction's pinned clock (`int(datetime.now(timezone.utc).timestamp())`). `purchased_at` is stored, returned by views, and will be passed to the LLM at STEP 5 — it never enters window arithmetic. **Schema change: `Action` gained `purchased_at: str`** (the one expected addition flagged in the handover).
+- **`challenge(action_id)`, `@gl.public.write.payable`:** enforces window open (`now >= challenge_closes_at` → closed, so the deadline second itself is past the boundary), one open challenge per action (via `Action.open_challenge_id`, enforced against any challenger), and exact deposit (`gl.message.value != bond_wei // 10` → `UserError`, both directions). Challenger identity unrestricted (anyone, per README.md, explicitly including the principal). Returns the new `challenge_id` (`c-000001`, counter-based like mandate/action ids) — not specified in the handover but needed by the UI; noted here. On success: `Challenge` stored (`CHALLENGE_OPEN`, deposit held, verdict fields placeholder-zeroed until resolve()), `action.state → CHALLENGED`, `open_challenge_id` set, challenge indexed under the action.
+- **D10 verification and branch choice.** Verified with a probe contract (`scratch/step4_probe/view_clock.py`) in direct mode: **`datetime.now(timezone.utc)` inside a `@gl.public.view` DOES return the transaction-pinned clock** — `view_now()` returned exactly the warped target (2030-01-01 → 1893456000) and tracked a mid-test warp with a 86400-second delta, identical to write methods. On studionet the on-chain half could not be verified: **the deploy path is currently broken network-wide** — three deploys (the probe twice, one with storage+`__init__`, once without) failed with the identical client-side decode error `ContractFunctionExecutionError: Position '32' is out of bounds (0 < position < 32)`, **including a re-deploy of the known-good `scratch/url_probe.py` that deployed successfully at STEP 2** — while reads against the already-deployed STEP 2 probe contract still succeed (`get_result` → `length: 559`). So the network is up; deploy/receipt decoding is what's erroring. **Branch taken: D10's second branch** — `get_action` returns the stored `state` plus `challenge_closes_at`, and the frontend derives "window elapsed, unchallenged" against wall clock at STEP 10. This branch is correct under *either* outcome of the pending on-chain check, and views never mutate stored state. The probe is ready to deploy the moment studionet recovers; carried as a to-do at CP4 (integration on studionet).
+- Views added: `get_action_ids_by_mandate(mandate_id)`, `get_action(action_id)` (all action fields, plus the open challenge's id/challenger/deposit/state when one is open), `get_challenge(challenge_id)`, `required_deposit(action_id)`.
+
+**Evidence**
+- `PYTHONIOENCODING=utf-8 genvm-lint check contracts/mandate_guard.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed` / `Contract: MandateGuard` / `Methods: 9 (6 view, 3 write)`. No warnings of ours.
+- `PYTHONIOENCODING=utf-8 pytest tests/direct/ -v` → **`73 passed in 1.90s`** (53 pre-existing, untouched, + 20 new in `tests/direct/test_record_action_challenge.py`).
+- Test matrix (all asserting the specific `UserError` substring, none "something raised"):
+  - principal == operator rejected (`Principal equals operator`)
+  - helper lookups: unknown mandate/action/challenge id via `get_mandate` / `get_action` / `get_challenge` / `record_action` / `challenge` / `required_deposit` → all `UserError` (6 tests)
+  - `required_deposit` == `bond_wei // 10` exactly
+  - action recorded and read back — every field incl. `purchased_at`, `challenge_closes_at == recorded_at + window`, state `OPEN`, per-mandate index
+  - non-operator `record_action` rejected (`Not operator`)
+  - `record_action` on `bond_intact == False` rejected (`Bond not intact`)
+  - window via `warp()`: challenge at `closes_at - 1` **accepted**; at `closes_at` exactly **rejected**; at `closes_at + 1` **rejected** — both boundary sides proven, off-by-one excluded
+  - deposit below required rejected; deposit above required also rejected (exact equality both directions)
+  - second challenge rejected while one open; same for a different challenger
+  - end-to-end register → record → challenge with state assertions after each step, deposit read from `required_deposit` (not computed client-side), principal as challenger
+- D10 direct-mode probe output: `VIEW now=1893456000 expected=1893456000 match=True` / `WRITE now=1893456000 expected=1893456000 match=True`; mid-test warp delta asserted `== 86400`.
+- D10 on-chain blocker evidence: deploy of `scratch/url_probe.py` (known-good, deployed at STEP 2) → `✖ Error deploying contract` with `Position '32' is out of bounds`; `genlayer receipt <its STEP 2 hash>` → same decode error; read of `0x66E70C…A37a0.get_result` → succeeded (`length: 559`). Deploy tx hash of the probe attempt, for the record: `0x2fdfdc1cee4284e096221d329a6af59a75788be9dd09b07bcabd4a8ab501c86b`.
+
+**Blockers**
+- None for this step. One environment issue recorded: studionet's deploy path is erroring network-wide right now (known-good contract included), which blocks only the optional on-chain half of the D10 verification. Direct-mode verification is complete and the branch chosen does not depend on the pending result.
+
+**Question for PM**
+- none (D10 branch taken is the one the handover pre-approves; `challenge()` returning `challenge_id` is the only unspecified addition, flagged above).
+
+**Deviations from the roadmap**
+- `scratch/step4_probe/view_clock.py` probe contract created for the D10 verification; committed as evidence in `9d38ad5` together with the CP2a bisect probes. `scratch/` must be excluded from the public repo at STEP 12 (gitignore or clean before publishing) — carried forward.
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---
