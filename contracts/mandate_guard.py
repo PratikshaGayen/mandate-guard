@@ -41,6 +41,7 @@ class Action:
     merchant_url: str
     item: str
     price: str
+    purchased_at: str
     recorded_at: u256
     challenge_closes_at: u256
     open_challenge_id: str
@@ -127,6 +128,10 @@ class MandateGuard(gl.Contract):
 
         principal_addr = Address(principal)
         operator = gl.message.sender_address
+        if principal_addr == operator:
+            raise gl.vm.UserError(
+                "Principal equals operator: the two parties must be different addresses"
+            )
 
         self.mandate_counter = u256(int(self.mandate_counter) + 1)
         mandate_id = "m-{:06d}".format(int(self.mandate_counter))
@@ -150,9 +155,125 @@ class MandateGuard(gl.Contract):
 
         return mandate_id
 
+    def _get_mandate_or_raise(self, mandate_id: str) -> Mandate:
+        mandate = self.mandates.get(mandate_id)
+        if mandate is None:
+            raise gl.vm.UserError("Unknown mandate id: " + mandate_id)
+        return mandate
+
+    def _get_action_or_raise(self, action_id: str) -> Action:
+        action = self.actions.get(action_id)
+        if action is None:
+            raise gl.vm.UserError("Unknown action id: " + action_id)
+        return action
+
+    def _get_challenge_or_raise(self, challenge_id: str) -> Challenge:
+        challenge = self.challenges.get(challenge_id)
+        if challenge is None:
+            raise gl.vm.UserError("Unknown challenge id: " + challenge_id)
+        return challenge
+
+    @gl.public.write
+    def record_action(
+        self,
+        mandate_id: str,
+        merchant_url: str,
+        item: str,
+        price: str,
+        purchased_at: str,
+    ) -> str:
+        mandate = self._get_mandate_or_raise(mandate_id)
+        if gl.message.sender_address != mandate.operator:
+            raise gl.vm.UserError(
+                "Not operator: only the mandate's registered operator may record actions"
+            )
+        if not mandate.bond_intact:
+            raise gl.vm.UserError(
+                "Bond not intact: every recorded action must be backed by a live bond"
+            )
+
+        # D9: the window is derived exclusively from the transaction's pinned
+        # clock. `purchased_at` is caller-supplied evidence — stored and shown,
+        # never used in window arithmetic.
+        now = u256(int(datetime.now(timezone.utc).timestamp()))
+
+        self.action_counter = u256(int(self.action_counter) + 1)
+        action_id = "a-{:06d}".format(int(self.action_counter))
+
+        self.actions[action_id] = Action(
+            id=action_id,
+            mandate_id=mandate_id,
+            merchant_url=merchant_url,
+            item=item,
+            price=price,
+            purchased_at=purchased_at,
+            recorded_at=now,
+            challenge_closes_at=u256(int(now) + int(mandate.challenge_window_seconds)),
+            open_challenge_id="",
+            state=ACTION_OPEN,
+        )
+
+        id_list = json.loads(self.action_ids_by_mandate.get(mandate_id) or "[]")
+        id_list.append(action_id)
+        self.action_ids_by_mandate[mandate_id] = json.dumps(id_list)
+
+        return action_id
+
+    @gl.public.write.payable
+    def challenge(self, action_id: str) -> str:
+        action = self._get_action_or_raise(action_id)
+        if action.open_challenge_id != "":
+            raise gl.vm.UserError(
+                "Challenge exists: one open challenge per action (D3)"
+            )
+        now = int(datetime.now(timezone.utc).timestamp())
+        if now >= int(action.challenge_closes_at):
+            raise gl.vm.UserError("Window closed: the challenge window has elapsed (D1)")
+
+        mandate = self._get_mandate_or_raise(action.mandate_id)
+        required_deposit = int(mandate.bond_wei) // 10
+        if int(gl.message.value) != required_deposit:
+            raise gl.vm.UserError(
+                "Wrong deposit: challenge deposit must be exactly bond_wei // 10 (D3)"
+            )
+
+        self.challenge_counter = u256(int(self.challenge_counter) + 1)
+        challenge_id = "c-{:06d}".format(int(self.challenge_counter))
+
+        self.challenges[challenge_id] = Challenge(
+            id=challenge_id,
+            action_id=action_id,
+            mandate_id=action.mandate_id,
+            challenger=gl.message.sender_address,
+            deposit_wei=gl.message.value,
+            opened_at=u256(now),
+            state=CHALLENGE_OPEN,
+            # Verdict fields are placeholders until resolve() populates them;
+            # state == OPEN is the marker that they are unpopulated.
+            verdict_within_mandate=False,
+            verdict_clause_violated="",
+            verdict_severity=u256(0),
+            verdict_reasoning="",
+        )
+
+        action.open_challenge_id = challenge_id
+        action.state = ACTION_CHALLENGED
+
+        id_list = json.loads(self.challenge_ids_by_action.get(action_id) or "[]")
+        id_list.append(challenge_id)
+        self.challenge_ids_by_action[action_id] = json.dumps(id_list)
+
+        return challenge_id
+
+    @gl.public.view
+    def required_deposit(self, action_id: str) -> int:
+        action = self._get_action_or_raise(action_id)
+        mandate = self._get_mandate_or_raise(action.mandate_id)
+        return int(mandate.bond_wei) // 10
+
     @gl.public.view
     def get_mandate(self, mandate_id: str) -> dict:
-        m = self.mandates[mandate_id]
+        m = self._get_mandate_or_raise(mandate_id)
         return {
             "id": m.id,
             "text": m.text,
@@ -168,3 +289,54 @@ class MandateGuard(gl.Contract):
     @gl.public.view
     def get_mandate_ids_by_operator(self, operator: str) -> list:
         return json.loads(self.mandate_ids_by_operator.get(Address(operator).as_hex) or "[]")
+
+    @gl.public.view
+    def get_action_ids_by_mandate(self, mandate_id: str) -> list:
+        self._get_mandate_or_raise(mandate_id)
+        return json.loads(self.action_ids_by_mandate.get(mandate_id) or "[]")
+
+    @gl.public.view
+    def get_action(self, action_id: str) -> dict:
+        a = self._get_action_or_raise(action_id)
+        # D10: `state` is the stored state; the "window elapsed, unchallenged"
+        # transition is derived by the frontend from `challenge_closes_at` vs
+        # wall clock. Views never advance stored state.
+        out = {
+            "id": a.id,
+            "mandate_id": a.mandate_id,
+            "merchant_url": a.merchant_url,
+            "item": a.item,
+            "price": a.price,
+            "purchased_at": a.purchased_at,
+            "recorded_at": int(a.recorded_at),
+            "challenge_closes_at": int(a.challenge_closes_at),
+            "open_challenge_id": a.open_challenge_id,
+            "state": a.state,
+        }
+        if a.open_challenge_id != "":
+            c = self._get_challenge_or_raise(a.open_challenge_id)
+            out["challenge"] = {
+                "id": c.id,
+                "challenger": c.challenger.as_hex,
+                "deposit_wei": int(c.deposit_wei),
+                "opened_at": int(c.opened_at),
+                "state": c.state,
+            }
+        return out
+
+    @gl.public.view
+    def get_challenge(self, challenge_id: str) -> dict:
+        c = self._get_challenge_or_raise(challenge_id)
+        return {
+            "id": c.id,
+            "action_id": c.action_id,
+            "mandate_id": c.mandate_id,
+            "challenger": c.challenger.as_hex,
+            "deposit_wei": int(c.deposit_wei),
+            "opened_at": int(c.opened_at),
+            "state": c.state,
+            "verdict_within_mandate": c.verdict_within_mandate,
+            "verdict_clause_violated": c.verdict_clause_violated,
+            "verdict_severity": int(c.verdict_severity),
+            "verdict_reasoning": c.verdict_reasoning,
+        }
