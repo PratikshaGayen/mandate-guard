@@ -104,7 +104,7 @@ class TestLeaderVerdicts:
             direct_vm, direct_deploy, direct_alice, direct_bob, LISTING_FLEX
         )
 
-        verdict = contract.resolve(challenge_id)
+        verdict = contract.resolve(challenge_id)["verdict"]
         print("\nCOMPLIANT VERDICT JSON:", json.dumps(verdict, sort_keys=True))
         assert verdict["within_mandate"] is True
         assert verdict["clause_violated"] is None
@@ -119,7 +119,7 @@ class TestLeaderVerdicts:
             direct_vm, direct_deploy, direct_alice, direct_bob, LISTING_BASIC
         )
 
-        verdict = contract.resolve(challenge_id)
+        verdict = contract.resolve(challenge_id)["verdict"]
         print("\nDRIFTING VERDICT JSON:", json.dumps(verdict, sort_keys=True))
         assert verdict["within_mandate"] is False
         assert verdict["clause_violated"] == VERDICT_DRIFT["clause_violated"]

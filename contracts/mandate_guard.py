@@ -388,6 +388,10 @@ class MandateGuard(gl.Contract):
     @gl.public.write.payable
     def challenge(self, action_id: str) -> str:
         action = self._get_action_or_raise(action_id)
+        # Note: open_challenge_id is never cleared, so in this v1 an action can
+        # be challenged exactly once ever — a resolved action is adjudicated
+        # and must not be re-litigated. The error text below names the weaker
+        # rule; the code enforces the stronger one.
         if action.open_challenge_id != "":
             raise gl.vm.UserError(
                 "Challenge exists: one open challenge per action (D3)"
@@ -469,7 +473,65 @@ class MandateGuard(gl.Contract):
                 "Resolve failed: " + verdict["error"] + "; no state changed"
             )
 
-        return verdict
+        # ── Settlement (D13) ─────────────────────────────────────────────
+        # Payouts are external messages via the ghost contract and execute on
+        # finalization, not immediately. All amounts are u256 wei; no floats.
+        resolved_at = u256(int(datetime.now(timezone.utc).timestamp()))
+        payouts = []
+
+        if not bool(verdict["within_mandate"]):
+            # Out of mandate: the full bond goes to the principal; the
+            # challenger's deposit is returned in full. (Deliberately the full
+            # bond regardless of the size of the violation — README.md's rule,
+            # locked at CP3c review. severity is displayed, never scales money.)
+            if int(mandate.bond_wei) > 0:
+                gl.get_contract_at(mandate.principal).emit_transfer(value=mandate.bond_wei)
+                payouts.append(
+                    {
+                        "recipient": mandate.principal.as_hex,
+                        "amount_wei": int(mandate.bond_wei),
+                        "purpose": "bond_slashed_to_principal",
+                    }
+                )
+            if int(challenge.deposit_wei) > 0:
+                gl.get_contract_at(challenge.challenger).emit_transfer(
+                    value=challenge.deposit_wei
+                )
+                payouts.append(
+                    {
+                        "recipient": challenge.challenger.as_hex,
+                        "amount_wei": int(challenge.deposit_wei),
+                        "purpose": "deposit_returned_to_challenger",
+                    }
+                )
+            mandate.bond_intact = False
+            action.state = ACTION_RESOLVED_OUT
+            challenge.state = CHALLENGE_UPHELD
+        else:
+            # Within mandate: the deposit is forfeited to the operator; the
+            # bond is untouched.
+            if int(challenge.deposit_wei) > 0:
+                gl.get_contract_at(mandate.operator).emit_transfer(value=challenge.deposit_wei)
+                payouts.append(
+                    {
+                        "recipient": mandate.operator.as_hex,
+                        "amount_wei": int(challenge.deposit_wei),
+                        "purpose": "deposit_forfeited_to_operator",
+                    }
+                )
+            action.state = ACTION_RESOLVED_IN
+            challenge.state = CHALLENGE_REJECTED
+
+        # D12: record the outcome in storage — the UI cannot show a slash that
+        # only exists in an external message that already left.
+        challenge.verdict_within_mandate = bool(verdict["within_mandate"])
+        challenge.verdict_clause_violated = str(verdict.get("clause_violated") or "")
+        challenge.verdict_severity = u256(int(verdict.get("severity") or 0))
+        challenge.verdict_reasoning = str(verdict.get("reasoning") or "")
+        challenge.resolved_at = resolved_at
+        challenge.payouts_json = json.dumps(payouts, sort_keys=True)
+
+        return {"verdict": verdict, "payouts": payouts, "resolved_at": int(resolved_at)}
 
     @gl.public.view
     def required_deposit(self, action_id: str) -> int:
@@ -533,6 +595,7 @@ class MandateGuard(gl.Contract):
     @gl.public.view
     def get_challenge(self, challenge_id: str) -> dict:
         c = self._get_challenge_or_raise(challenge_id)
+        payouts = json.loads(c.payouts_json) if c.payouts_json != "" else []
         return {
             "id": c.id,
             "action_id": c.action_id,
@@ -545,4 +608,6 @@ class MandateGuard(gl.Contract):
             "verdict_clause_violated": c.verdict_clause_violated,
             "verdict_severity": int(c.verdict_severity),
             "verdict_reasoning": c.verdict_reasoning,
+            "resolved_at": int(c.resolved_at),
+            "payouts": payouts,
         }

@@ -502,3 +502,41 @@ The `TreeMap` root-cause is the standout. Bisecting to "bare `TreeMap()` in `__i
 **Notes:**
 **Next step:**
 ---
+
+## CP3c — settlement: slash and release (STEP 7)
+**Date:** 2026-09-05
+**Status:** DONE
+
+**What was done**
+- `resolve()` is feature-complete: after consensus on the verdict, it settles per **D13** exactly:
+  - `within_mandate == false`: the **full bond** is emitted to the principal, the challenger's **deposit is returned in full**, `bond_intact → False`, action → `RESOLVED_OUT_OF_MANDATE`, challenge → `RESOLVED_UPHELD`.
+  - `within_mandate == true`: the **deposit is emitted to the operator**, the bond is untouched and stays intact, action → `RESOLVED_WITHIN_MANDATE`, challenge → `RESOLVED_REJECTED`.
+  - `severity` is stored and displayed but **never scales the money**. Consequence stated honestly, as the handover requires: a slash pays the principal the whole bond regardless of how small the actual deviation was — a $5 overrun on a $250 mandate costs the operator the entire 250-GEN bond. That crudeness is deliberate v1 behaviour and belongs in the pitch alongside D6; it is not papered over with an invented severity-weighted payout.
+- All payouts use `gl.get_contract_at(recipient).emit_transfer(value=..., on='finalized')` — the `'finalized'` default, per the SDK's own warning about `'accepted'`. Zero-value emissions are branched around (`emit_transfer` raises on zero). **Payouts execute on finalization, not immediately** — the STEP 11 demo timeline must show the slash as "settlement emitted, finalizes shortly after", not instant.
+- **D12 — outcome recorded in storage.** `Challenge` gained `resolved_at: u256` (pinned clock) and `payouts_json: str` (JSON array, sorted keys, one entry per leg: recipient hex, exact wei amount, purpose string — e.g. `bond_slashed_to_principal` / `deposit_returned_to_challenger` / `deposit_forfeited_to_operator`). `get_challenge` now returns the full verdict (all four fields) + `resolved_at` + `payouts`, so the UI can show "bond slashed, 250 GEN to the principal" without depending on an external message that already left.
+- **D14:** `resolve()` is permissionless (anyone can crank it — tested with an uninvolved third party) and rejects a challenge whose state is not `OPEN` ("Already resolved"), which is the double-resolution guard. The challenge window does NOT need to have closed — a challenge existing means there is nothing left to wait for.
+- Also recorded in code per the CP2b review: `open_challenge_id` is never cleared, so an action can be challenged **once ever**, not merely once at a time. The comment sits on `challenge()`; the public README note is a STEP 12 task.
+- 7 tests in `tests/direct/test_resolve_settlement.py`.
+
+**Evidence**
+- `PYTHONIOENCODING=utf-8 genvm-lint check contracts/mandate_guard.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed` / `Contract: MandateGuard` / `Methods: 10 (6 view, 4 write)`.
+- `PYTHONIOENCODING=utf-8 pytest tests/direct/ -q` → **`99 passed in 2.35s`** (92 pre-existing untouched + 7 new; one STEP 5 test updated to unwrap `resolve()`'s new return envelope `{verdict, payouts, resolved_at}`).
+- **D11 stated plainly: direct mode cannot move balances.** `emit_transfer` is a silent no-op there and contract balances always read 0 (PM probe, CP2b review). What is verified instead is payout *intent*: the tests capture every emitted `PostMessage` via `direct_vm._gl_call_hook` and assert, for each leg, the recipient address, the exact wei amount, and `on == 'finalized'`. Out-of-mandate: exactly 2 emissions — bond `250 * 10^18` wei and deposit `25 * 10^18` wei, both `on='finalized'`. Within-mandate: exactly 1 emission — deposit to the operator. Double resolution emits nothing more. Real balance movement is verified on-chain at STEP 8, and this distinction must survive into the submission (no "balances verified" claim from direct-mode evidence).
+- Test matrix: slash path (both legs' recipient/amount/`on`, `bond_intact=False`, states, recorded payouts), release path (single leg to operator, bond intact, states, recorded payout), double resolution rejected + no second emission, unknown `challenge_id` → `UserError`, permissionless resolve by a third party, D15 failure leaves state and money untouched **and the retry succeeds** once the page is reachable.
+
+**Blockers**
+- none
+
+**Question for PM**
+- none
+
+**Deviations from the roadmap**
+- none. (This closes P3 — the contract is feature-complete. Stopping for review before STEP 8 as instructed.)
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---
