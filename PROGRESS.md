@@ -320,3 +320,44 @@ Two items PM is adding to the record (see `PROJECT_ROADMAP.md` §4, D6 and §8):
 Minor, non-blocking: probe recorded 2806 bytes for the demo page, local `curl` reports 2814 — almost certainly CRLF/LF line-ending difference, not a page edit. Worth a re-probe before the STEP 11 rehearsal to confirm the freeze held.
 **Next step:** STEP 3 — Storage schema and `register_mandate` (CP2a). Carry forward: the `required_deposit` view method, D6, and the USD/GEN seam note.
 ---
+
+## CP2a — Storage schema and register_mandate (STEP 3)
+**Date:** 2026-09-05
+**Status:** DONE
+
+**What was done**
+- Created `contracts/mandate_guard.py` (`MandateGuard`, pinned runner header) with the **full-lifecycle storage schema** designed now so STEP 4/6/7 need no refactor. Only `register_mandate` + two read-back views implemented — `record_action`, `challenge`, `resolve` deliberately absent.
+- **Storage schema (final):**
+  - `@allow_storage @dataclass Mandate` — `id: str`, `text: str`, `principal: Address`, `operator: Address`, `bond_wei: u256`, `spend_ceiling_wei: u256`, `challenge_window_seconds: u256`, `created_at: u256` (tx-pinned unix seconds, D1), `bond_intact: bool` (goes false when the bond is slashed at STEP 7).
+  - `@allow_storage @dataclass Action` — `id: str`, `mandate_id: str`, `merchant_url: str`, `item: str`, `price: str` (recorded text, e.g. `"$220.00"`), `recorded_at: u256`, `challenge_closes_at: u256` (D1: `recorded_at + mandate.challenge_window_seconds`), `open_challenge_id: str` (`""` when none — this is what enforces **one open challenge per action**, D3), `state: str`.
+  - `@allow_storage @dataclass Challenge` — `id: str`, `action_id: str`, `mandate_id: str`, `challenger: Address`, `deposit_wei: u256`, `opened_at: u256`, `state: str`, plus flat verdict fields `verdict_within_mandate: bool`, `verdict_clause_violated: str`, `verdict_severity: u256`, `verdict_reasoning: str` (populated at resolve). **Deliberately flat, not a nested `Verdict` struct** — nested storage dataclasses are untested territory in this SDK and the flat form carries zero risk; noted for PM.
+  - **Action state machine (5 states, no collapses):** `OPEN` (recorded, window still open) → `CHALLENGED` (challenge open, awaiting resolution) → `RESOLVED_OUT_OF_MANDATE` (verdict false, bond slashed) or `RESOLVED_WITHIN_MANDATE` (verdict true, challenger loses deposit); `UNCHALLENGED` (window elapsed with no challenge — terminal, bond intact). The OPEN→UNCHALLENGED transition happens lazily on read/settlement at STEP 4+, the states exist now.
+  - **Challenge state machine (3 states):** `OPEN`, `RESOLVED_UPHELD` (action out of mandate — deposit returned to challenger), `RESOLVED_REJECTED` (action within mandate — deposit forfeited to operator).
+  - **Collections & indexes** (Pattern 7, JSON-string id lists under `str` keys — calldata supports `str` keys only): `mandates: TreeMap[str, Mandate]`, `actions: TreeMap[str, Action]`, `challenges: TreeMap[str, Challenge]`; indexes `mandate_ids_by_operator`, `action_ids_by_mandate`, `challenge_ids_by_action`; counters `mandate_counter` / `action_counter` / `challenge_counter: u256`.
+  - **ID scheme:** counter-based `str` ids — `m-000001`, `a-000001`, `c-000001` — stable, readable, calldata-safe.
+  - **`required_deposit` is computable** for any action (D3, PM's CP1 requirement): `actions[action_id].mandate_id → mandates[mandate_id].bond_wei // u256(10)`. The view method itself is STEP 4 per the handover.
+- `register_mandate(text, principal, spend_ceiling_wei, challenge_window_seconds) -> str` per the locked D7 signature: `@gl.public.write.payable`, `gl.message.sender_address` recorded as **operator**, `principal` converted with `Address(...)` (Pattern 5), bond captured from `gl.message.value` (u256 wei). Validations, each raising `gl.vm.UserError`: zero value ("Zero value"), zero ceiling ("Zero ceiling"), zero window ("Zero window"), blank text ("Empty text"), bond below ceiling ("Bond below ceiling", D2 — `>=` so equality is accepted). Appends to the operator's index; returns the mandate id.
+- View methods: `get_mandate(mandate_id) -> dict` (every field, addresses as EIP-55 hex, u256 as int) and `get_mandate_ids_by_operator(operator) -> list`.
+- Wrote `tests/direct/test_register_mandate.py` — 10 tests covering every required case in the handover §7.
+
+**Evidence**
+- `PYTHONIOENCODING=utf-8 genvm-lint check contracts/mandate_guard.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed` / `Contract: MandateGuard` / `Methods: 3 (2 view, 1 write)`. No warnings of our own (the runner-version `ℹ` note is the one the PM ruled to ignore).
+- `PYTHONIOENCODING=utf-8 pytest tests/direct/ -v` → **`53 passed in 1.43s`** — the 10 new `test_register_mandate.py` tests plus all 43 pre-existing tests, none broken. Required cases proven: read-back of every stored field; bond below ceiling rejected; bond **exactly equal** to ceiling accepted (boundary); zero-value rejected; zero ceiling rejected; two operators' mandates distinct and non-colliding. Extras: zero window rejected, blank text rejected, and a post-rejection check that the operator index stays empty. Rejections assert on the actual `UserError` message substring via `direct_vm.expect_revert(...)` (e.g. `Bond below ceiling`), not just "something raised".
+- **Finding — bare `TreeMap()` in `__init__` is broken in this SDK when the class declares a dataclass-valued TreeMap.** First implementation assigned all six TreeMaps in `__init__`; every test failed with `AssertionError: Is right the same storage type? TreeMap <- TreeMap` at `genlayer/py/storage/_internal/desc_record.py:45` (genvm-std extracted by the pinned runner). Isolated by bisecting with probe contracts in `scratch/schema_probe/`: two `TreeMap[str, str]` fields + `__init__` assignment → passes; adding one `TreeMap[str, Item]` (Item = `@allow_storage @dataclass`) → the `__init__` assignment path fails regardless of assignment order, even for the previously-fine `str`-valued maps. Fix: **declare storage containers in the class body and never construct them in `__init__`** — they auto-default on first access. This is exactly the vendor's `football_bets.py` pattern, which is the same code shape already proven on studionet (5/5 AGREE, CP0-D). u256 counters are still explicitly initialized in `__init__` (verified that assignment works; the probe round-trip `put`/`get`/`has`/`get_or_default`/counter all pass). Probe files kept under `scratch/schema_probe/` as evidence; the probe's pytest file was removed from `tests/direct/` after diagnosis.
+
+**Blockers**
+- none
+
+**Question for PM**
+- `register_mandate` does **not** reject `principal == operator` (nothing in D7 or the docs specifies it; the adversarial design implies different parties but never mandates a check). I left it out rather than add an unspecified restriction. If you want it rejected, that's a one-line change at STEP 4 review.
+
+**Deviations from the roadmap**
+- `scratch/schema_probe/` probe contracts were created and run purely to root-cause the storage bug above; they are not Mandate Guard code and are not imported by anything. No other deviations.
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---
