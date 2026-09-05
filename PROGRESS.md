@@ -260,3 +260,49 @@ STEP 1's literal exit criterion (`AGENT_INSTRUCTIONS.md` sub-step 7) says the in
 **Notes:**
 **Next step:**
 ---
+
+## CP1 — Design lock (STEP 2)
+**Date:** 2026-09-05
+**Status:** DONE
+
+**What was done**
+- Wrote `DESIGN_DECISIONS.md` covering all seven STEP 2 items plus the new D5 ruling. Summary:
+  - **D1 (challenge window): implementable.** Time mechanism verified: the GenVM clock is pinned to the transaction datetime — `datetime.now(timezone.utc)` returns the same value on every validator re-executing the transaction; `gl.message_raw['datetime']` exposes the same value as an ISO string. Source: https://docs.genlayer.com/developers/intelligent-contracts/features/transaction-context. Window enforced via `challenge_closes_at = tx_time + window` stored at `record_action`, checked at `challenge` (a later transaction → real elapsed time). Window supplied as a `u256` seconds parameter at `register_mandate` (default 86400, demo 120). Note: we use the `datetime` form, not `int(time.time())` (docs show both; the installed linter forbids `time.time`).
+  - **D2 (bond sizing): implementable.** Ceiling supplied as explicit `spend_ceiling_wei: u256` calldata parameter (never parsed from the mandate text); bond arrives via `@gl.public.write.payable` as `gl.message.value` (native u256, wei). Validation: reject zero value, reject zero ceiling, require `gl.message.value >= spend_ceiling_wei`, raise `gl.vm.UserError` on failure.
+  - **D3 (challenger deposit): implementable.** `required_deposit = bond_wei // u256(10)` — pure integer u256, no floats. Exact-value requirement, window-open check, one-open-challenge-per-action flag. Locked the success path (deposit returned to challenger) as the symmetric completion of the ruling — flagged for PM in DESIGN_DECISIONS.md.
+  - **D4 (equivalence fields): implementable and already doc-settled.** `gl.vm.run_nondet_unsafe(leader_fn, validator_fn)`; validator independently re-fetches and re-derives, compares `within_mandate` exactly (docs Pattern 1) and `clause_violated` semantically via the `EqComparative` template / `gl_call.gl_call_generic` (docs Pattern 3); `severity`/`reasoning` stored but never compared. Never `prompt_non_comparative`.
+  - **D5 (demo URL): executed per ruling.** Published a frozen static merchant page we control; verified all URLs validator-side (below).
+  - **Demo scenario:** locked — Atlas Air flight listing, mandate with numeric clause (≤ $250) + judgment clause ("prefer refundable fares"); compliant action books refundable Flex Economy $220, drifting action books non-refundable Basic Saver $180 (violates the judgment clause while saving money).
+  - **Verdict schema:** frozen exactly as README.md — `within_mandate`, `clause_violated`, `severity`, `reasoning`.
+- Published the demo listing page (D5): created public repo https://github.com/PratikshaGayen/mandate-guard-demo with `demo-listing/index.html` (source also committed here in `demo-listing/`), enabled GitHub Pages. Page: fictional "Atlas Air" flight AA-281 BER→LIS, Basic Saver $180.00 NON-REFUNDABLE vs Flex Economy $220.00 FULLY REFUNDABLE. Static HTML, no JS. Page is now frozen through judging (25 Sep).
+
+**Evidence**
+- Docs verified: transaction-context page states "Time inside the GenVM is deterministic and pinned to the transaction's timestamp… Every validator re-executing the transaction sees the same value, so you can use it for storage, comparisons, and prompt context without breaking equivalence." Equivalence-principle page confirms the custom-validator pattern (validator receives `gl.vm.Result`; non-`Return` → reject; "validators should almost always re-run or independently derive the answer" for settlement logic) and LLM-based comparative judgment via `EqComparative` + `gl_call.gl_call_generic`.
+- Installed linter cross-check: `genvm_linter/lint/safety.py` (v0.11.1rc2): "datetime.now() is OK in GenLayer - SDK provides deterministic version"; `time.time` listed in FORBIDDEN_CALLS.
+- **Validator-side URL verification (studionet, the load-bearing evidence):** deployed disposable probe contract `scratch/url_probe.py` → `Contract Address: 0x66E70CEF7C04cA0A95ec920a830d1B40330A37a0` (deploy tx `0x7862f5f83da025f3c899889f5112936635de1efe12217e696daecf0c4b89110a`, status ACCEPTED). It fetches a URL inside `gl.eq_principle.strict_eq` — the result is only written to storage if every participating validator independently fetches and agrees byte-for-byte. All four URLs passed:
+  - `https://pratikshagayen.github.io/mandate-guard-demo/` — `gl.nondet.web.get` — ACCEPTED, validators agreed; stored result: `length: 2806`, head = Atlas Air HTML, `tx_unix_time: 1788583671`.
+  - `https://raw.githubusercontent.com/PratikshaGayen/mandate-guard-demo/main/index.html` — `get` — ACCEPTED, agreed, `length: 2806`.
+  - `https://example.com/` — `get` — ACCEPTED, agreed, `length: 559` (genuinely third-party, stable, static).
+  - `https://books.toscrape.com/` — `get` — ACCEPTED, agreed, `length: 51274` (third-party listing-shaped page, spare).
+  - Sample consensus line: `validator_votes_name: [ 'AGREE', 'IDLE', 'IDLE', 'AGREE', 'AGREE' ], status_name: 'ACCEPTED'`.
+  - Fetch method recorded for all URLs: **`gl.nondet.web.get()` suffices** — no page needs `gl.nondet.web.render()`.
+- Local reachability cross-check: `curl` → 200 for all four URLs.
+- Lint of probe contract: `PYTHONIOENCODING=utf-8 genvm-lint check scratch/url_probe.py` → `✓ Lint passed (3 checks)` / `✓ Validation passed` / `Contract: UrlProbe` / `Methods: 2 (1 view, 1 write)`.
+- The probe's stored `tx_unix_time: 1788583671` (2026-09-05 UTC) reached consensus inside a `strict_eq` payload — direct live-network confirmation that `datetime.now(timezone.utc)` is consensus-safe (D1).
+
+**Blockers**
+- none
+
+**Question for PM**
+- Three design completions locked in `DESIGN_DECISIONS.md` §Notes that the rulings did not explicitly specify: (1) successful-challenge deposit is returned to the challenger (failure forfeits to the operator, per ruling); (2) spend ceiling is a principal-declared wei parameter, not parsed from the mandate text; (3) `challenge` requires the exact deposit amount. None change a ruling — confirm or override at review.
+
+**Deviations from the roadmap**
+- Two artifacts beyond `DESIGN_DECISIONS.md`, both mandated by the D5 ruling and verification duty, neither contract code: `demo-listing/index.html` (the page source, published to a new public repo `PratikshaGayen/mandate-guard-demo` per the ruling) and `scratch/url_probe.py` (disposable probe contract deployed to studionet to prove URLs are reachable from validator infrastructure, not just this machine — local curl alone could not discharge that obligation). No STEP 3 work started.
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---
