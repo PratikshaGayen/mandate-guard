@@ -748,3 +748,45 @@ Same verdict direction and payout structure as Run 1 (LLM wording differs, as ex
 **Notes:** This entire packet (FIX-1, CP4, CP5a, CP5b, CP6) was completed and reviewed by the same person in this session, so the usual separation between agent report and independent PM verification collapsed into one pass — every claim above was checked against actual command output, the live contract, or a real render, not accepted on trust. The one item still open going into STEP 12 is the literal MetaMask click-through, which needs a real funded wallet and is not something to fabricate. STEPS 12-13 (public repo, submission) remain **not started** and are outward-facing — they need your explicit go-ahead before anything gets pushed or posted publicly, per the standing rule.
 **Next step:** Await your decision on STEP 12 (public repository) before proceeding — that step pushes to a public GitHub repo and is not something to do without asking first.
 ---
+
+## CP7a — Public repository and documentation (STEP 12)
+**Date:** 2026-09-16
+**Status:** DONE
+
+**What was done**
+- Secret scan across the **entire git history**, not just the working tree: extracted all 139 unique blobs from all commits (`git rev-list --all --objects` + `cat-file --batch-check`) and pattern-scanned each (hex-64 keys, `sk-`/`ghp_`/`github_pat_` tokens, AWS/Google keys, PEM blocks, private-key/secret/api-key assignment keywords, JWTs, mnemonics). Result: **zero secrets**. Two hex-64 regex hits were false positives — public transaction hashes in PROGRESS.md and a scratch log. Commit *messages* scanned separately: clean. Only tracked env file was `frontend/.env.local` (public contract address only, no keys); no `.env` exists.
+- **History cleaned before publishing:** `scratch/` (probe contracts, PM probe, logs — PM had ruled at CP2b that it must not ship) and `frontend/.env.local` were purged from all commits via `git filter-repo --invert-paths`, then objects repacked. 24 commits preserved (25 parsed; one became empty and was dropped). Consequence recorded honestly: **all commit hashes changed** — earlier PROGRESS.md entries cite the old hashes (e.g. FIX-1's `9d38ad5`, CP2b's scratch commit `9d38ad5`-era ids). The log itself is untouched, append-only.
+- **Working tree on disk kept intact** (scratch/ now untracked and gitignored, still available as local evidence); `frontend/.env.local` recreated (public address only).
+- `.gitignore` hardened: `.env.local` / `.env.*.local` / `scratch/` added — the old file matched only bare `.env`, which is exactly how `.env.local` slipped into the initial commit.
+- **Public repo README written for a stranger**: what/why/problem, flow diagram, why-GenLayer with the leader-rederivation consensus mechanics, architecture map, setup (venv + pip + npm), direct tests, lint, demo run, deployed contract table (studionet, chain 61999, `0xbd70CB985fA5D581aA7b83c1e27EBf3D1293593b`), merchant-listing provenance, testing evidence, and an **Honest limitations** section carrying D6 (challenger incentive gap), the USD/GEN seam, blunt settlement, the EOA payout-crediting finding, and one-challenge-ever. Per instructions, `PROGRESS.md` / `PROJECT_ROADMAP.md` / `DESIGN_DECISIONS.md` kept in the repo as process evidence.
+- **Vendor sample contract and its tests removed** (`contracts/football_bets.py`, `PatternTest.py`, `tests/direct/test_create_bet.py`, `test_resolve_bet.py`, `test_views.py`, `test_patterns.py`, `tests/integration/test_football_bets.py`, `test_new_features.py`, `fixtures.py`) per the CP0-D ruling that they'd be deleted once Mandate Guard replaced the sample. Suite re-run after removal: **61 passed** (was 104 including the 43 vendor tests). One-off probe contracts (`payout_probe.py`, `view_clock_probe.py`) removed from `contracts/` too.
+- **CI fixed before it could go red publicly:** boilerplate `ci.yml` linted the deleted `football_bets.py`; replaced with a 3-job workflow (lint MandateGuard, direct tests, frontend build). Boilerplate PR-governance workflows (branch-policy, fast-forward, retarget) and the `support/` tree removed.
+- Frontend branding de-vendored: `package.json` name/description, `frontend/README.md`, `.env.example` comment.
+- **Clean-clone verification:** fresh `git clone` → fresh venv → `pip install -r requirements.txt` → `pytest tests/direct/ -q` → **61 passed**. Fresh `npm install` → `npm run build` → compiled, static prerender OK.
+- Branch renamed `master` → `main` (GitHub default); pushed via `gh repo create mandate-guard --public --source . --push`.
+
+**Evidence**
+- Repository: **https://github.com/PratikshaGayen/mandate-guard** — `gh repo view` → `visibility=PUBLIC`.
+- Pushed-tree audit via GitHub API (`git/trees/main?recursive=1`, 103 paths): zero matches for `scratch/`, `.env.local`, `football`, `PatternTest`, `probe`; `README.md`, `contracts/mandate_guard.py`, `PROGRESS.md`, `ci.yml` confirmed present.
+- Secret scan: `139 unique blobs scanned, 0 secrets (2 tx-hash false positives identified)`; post-rewrite rescan of new commits: 1 hex-64 hit = PROGRESS.md's own labeled public deploy tx hashes.
+- Clean clone: `61 passed in 1.98s`; frontend `✓ Compiled successfully`, `○ (Static) prerendered`.
+- `git log --oneline | wc -l` → 24; `git log --all --name-only | grep -cE "scratch/|\.env\.local"` → 0.
+
+**Blockers**
+- none
+
+**Question for PM**
+- Wallet round-trip (carried from CP5a): now fully de-risked by code-level verification — `MandateGuard.ts` passes a **string** account, and in genlayer-js v1.1.8 a string account routes all PROVIDER_METHODS (`eth_sendTransaction`, `personal_sign`) to `window.ethereum` with a chainId-61999 assertion. Studionet is gasless, so **no funding is needed** for the demo round trip; MetaMask only needs the studionet network added manually (the app's `addGenLayerNetwork` flow can't succeed unattended because MetaMask has no built-in 61999 entry). Ready to drive the round trip together whenever you have 15 minutes and MetaMask in front of you; it can also be shown live in the demo video, or skipped on camera as the PM prefers.
+
+**Deviations from the roadmap**
+- Commit hashes rewritten by the history purge (unavoidable with filter-repo; the append-only PROGRESS.md text itself is unmodified).
+- Vendor sample suite deleted under the CP0-D authorization, restated here because this is the commit where it actually happened.
+- CI workflow rewritten and boilerplate governance workflows removed — new work not specified in the step, needed so the public repo's CI is green rather than red.
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---
