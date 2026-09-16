@@ -9,6 +9,9 @@
 *.sln
 *.sw?
 .env
+.env.local
+.env.*.local
+scratch/
 node_modules
 # Python bytecode
 __pycache__/
