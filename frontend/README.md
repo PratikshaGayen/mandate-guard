@@ -1,84 +1,21 @@
-# GenLayer Football Market
+# Mandate Guard — frontend
 
-Next.js frontend for GenLayer Football Market - AI-powered football match predictions on GenLayer blockchain.
+Next.js 15 UI for the Mandate Guard intelligent contract (`contracts/mandate_guard.py`).
+
+Three surfaces:
+
+- **Mandate editor** — plain-English mandate, principal address, spend ceiling (GEN), challenge window (seconds). Bond = spend ceiling, posted with the registration.
+- **Action feed** — per-mandate purchases with evidence (merchant URL, item, price, timestamps) and derived challenge-window state.
+- **Verdict panel** — challenge an action (deposit read live from the contract's `required_deposit`, never computed client-side) and display the full structured verdict plus recorded payouts.
 
 ## Setup
 
-1. Install dependencies:
+See the [root README](../README.md#setup) for prerequisites and the deployed contract address.
 
-**Using bun:**
-```bash
-bun install
-```
-
-**Using npm:**
 ```bash
 npm install
-```
-
-2. Create `.env` file:
-```bash
-cp .env.example .env
-```
-
-3. Configure environment variables:
-   - `NEXT_PUBLIC_CONTRACT_ADDRESS` - GenLayer Football Betting contract address
-   - `NEXT_PUBLIC_STUDIO_URL` - GenLayer Studio URL (default: https://studio.genlayer.com/api)
-
-## Development
-
-**Using bun:**
-```bash
-bun dev
-```
-
-**Using npm:**
-```bash
+cp .env.example .env.local   # set NEXT_PUBLIC_CONTRACT_ADDRESS
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-## Build
-
-**Using bun:**
-```bash
-bun run build
-bun start
-```
-
-**Using npm:**
-```bash
-npm run build
-npm start
-```
-
-## Tech Stack
-
-- **Next.js 15** - React framework with App Router
-- **TypeScript** - Type safety
-- **Tailwind CSS v4** - Styling with custom glass-morphism theme
-- **genlayer-js** - GenLayer blockchain SDK
-- **TanStack Query (React Query)** - Data fetching and caching
-- **Radix UI** - Accessible component primitives
-- **shadcn/ui** - Pre-built UI components
-
-## Wallet Management
-
-The app uses GenLayer's account system:
-- **Create Account**: Generate a new private key
-- **Import Account**: Import existing private key
-- **Export Account**: Export your private key (secured)
-- **Disconnect**: Clear stored account data
-
-Accounts are stored in browser's localStorage for development convenience.
-
-## Features
-
-- **Create Bets**: Create football match predictions with team names, game date, and predicted winner (Team 1, Team 2, or Draw)
-- **View Bets**: Real-time bet table with match details, predictions, status, and owners
-- **Resolve Bets**: Bet owners can resolve matches using GenLayer's AI to verify actual results
-- **Leaderboard**: Track top players by points earned from correct predictions
-- **Player Stats**: View your points and ranking in the community
-- **Glass-morphism UI**: Premium dark theme with OKLCH colors, backdrop blur effects, and smooth animations
-- **Real-time Updates**: Automatic data fetching with 3-second polling intervals via TanStack Query
+Wallet: MetaMask with the GenLayer studionet network added manually (RPC `https://studio.genlayer.com/api`, chain ID `61999`, currency `GEN`).
