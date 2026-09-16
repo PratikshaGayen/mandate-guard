@@ -1,148 +1,148 @@
 # Mandate Guard
 
-**Status:** finalized as the original pick, then set aside while Injection Court was
-explored. Design is intact and unchanged. Pitch copy exists but is written in the earlier,
-more polished voice — **needs a rewrite in the plain human voice before posting.** See
-`pitch.md`.
+Enforce what you actually meant when your AI agent spends your money — on [GenLayer](https://www.genlayer.com/), the AI-native blockchain where validators read the live web and judge with an LLM.
 
-**Event:** GenLayer Agent Tank (pitch mission → 2 Sep, build window 3–17 Sep, winners 25 Sep).
-
----
+Built for the GenLayer Agent Tank hackathon (September 2026).
 
 ## The problem
 
-Agent payment rails can enforce numeric limits. They cannot enforce intent.
+Agent payment rails (AP2, x402, Visa's Trusted Agent Protocol) handle numeric limits fine: price caps, merchant allowlists, spend velocity. But half of any real instruction is a judgment call — "prefer refundable fares", "a reputable seller", "nothing that looks like a scalper". No payment rail can enforce a sentence like that.
 
-AP2, x402, Visa Trusted Agent Protocol, Mastercard Agent Pay — all of them handle price
-caps, merchant allowlists, and spend velocity. But half of any real instruction you give an
-agent is a judgment call:
+It gets worse: in AP2, the party that checks the cart against your intent **is your own agent** — exactly the party that could be compromised or prompt-injected. And AP2's flagship demo case is "buy the tickets the moment they go on sale": you're asleep, nobody is watching.
 
-- "prefer refundable"
-- "a reputable seller"
-- "nothing that looks like a scalper"
-- "a reasonable itinerary"
-
-Nothing in the stack can check those.
-
-## The verified gap
-
-Two facts confirmed during research, both load-bearing for the pitch:
-
-1. **AP2's Intent Mandate captures structured constraints** — size, price ceiling, colour,
-   delivery address — and the buyer-side agent verifies the merchant's Cart Mandate against
-   it. So the party checking whether the purchase honoured your intent **is your own
-   agent**: precisely the party that could be compromised, misaligned, or prompt-injected.
-
-2. **AP2's flagship delegated case is "buy concert tickets the moment they go on sale."**
-   Human not present. Nobody watching.
-
-Source: https://cloud.google.com/blog/products/ai-machine-learning/announcing-agents-to-payments-ap2-protocol
-
-## What we're building
+## What it does
 
 ```
-You register a mandate in plain English
+You register a mandate in plain English (+ post a bond)
         ↓
-Agent posts a bond, then transacts instantly (no added latency)
+Agent posts the bond, transacts instantly — zero added latency
         ↓
-Every action lands on-chain with its evidence
-   (merchant URL, item, price, timestamp)
+Every purchase lands on-chain with its evidence
+(merchant URL, item, price, timestamps)
         ↓
-Anyone can challenge one action inside a window
+Anyone can challenge a purchase inside a window
         ↓
-Validators fetch the live listing and rule
+GenLayer validators fetch the LIVE listing and judge it against the mandate
         ↓
-Out of mandate  → bond slashed, principal compensated
-Within mandate  → challenger loses their deposit
+Out of mandate → bond slashed, principal compensated
+Within mandate → challenger loses their deposit
 ```
 
-The optimistic-challenge shape mirrors GenLayer's own Optimistic Democracy, so the
-architecture argues for itself.
+The design is optimistic-challenge (like GenLayer's own Optimistic Democracy): the agent never waits for a judge, but every action is backed by collateral and can be adjudicated afterwards.
 
-## The verdict
-
-Structured, so validators can reach consensus on comparable fields:
-
-```python
-{
-  "within_mandate": False,
-  "clause_violated": "prefer refundable",
-  "severity": 3,
-  "reasoning": "Non-refundable basic economy. Refundable fare was $40 more."
-}
-```
+**The verdict is structured and on-chain** — `within_mandate` (bool), `clause_violated` (quoted clause or null), `severity` (0–100), `reasoning` (free text). A ruling with money attached, not a vibe.
 
 ## Why this needs GenLayer
 
-1. **The parties are adversaries.** You and the agent's operator are on opposite sides.
-   Neither one's backend gets to grade the homework.
-2. **The decision requires judgment, not code.** "Is a 6am departure a red-eye?" "Is this
-   seller reputable?" No deterministic contract can evaluate that.
-3. **It has to read the live web.** Validators fetch the actual merchant listing to check
-   the claim. Native web access, no oracle.
+1. **The parties are adversaries.** Principal and operator are on opposite sides; neither one's backend gets to grade its own homework. The judgment comes from a stake-weighted validator committee.
+2. **The decision requires judgment, not code.** "Is a non-refundable fare a violation if the refundable one cost $40 more?" No deterministic contract can evaluate that — validators each run their own LLM call.
+3. **It has to read the live web.** Validators fetch the actual merchant listing themselves, natively — no oracle, no trusted feeder.
 
-Latency is handled by design: the agent acts immediately and challenges resolve afterwards,
-so validator time never sits in the purchase path.
+Consensus mechanics: the leader fetches the listing and produces a verdict; every validator **independently re-fetches the page and re-derives its own verdict**, comparing `within_mandate` exactly and `clause_violated` semantically (LLM-mediated comparison). `severity` and `reasoning` are recorded but never compared — they're display fields, and comparing LLM prose byte-for-byte would break consensus.
 
-## Why this survived scrutiny better than Injection Court
+## Architecture
 
-Injection Court needed a funding mechanism that doesn't exist yet — someone has to have
-staged capital before an incident or a verdict can't pay anyone, and no agent developer
-posts a bond today.
+```
+contracts/mandate_guard.py     MandateGuard intelligent contract (Python, GenVM)
+  register_mandate(...)        operator registers mandate, bond = value attached
+  record_action(...)           operator-only; stores evidence + opens challenge window
+  challenge(action_id)         payable; exact deposit = bond/10, one challenge per action
+  resolve(challenge_id)        permissionless; web fetch + LLM leader, validator re-derivation,
+                               slash (bond → principal) or release (deposit → operator)
 
-Mandate Guard has no such hole. **The bond is the mechanism from step one**, posted by the
-operator who wants permission to act on someone else's money. There's no insurance market
-to invent and no premium pricing to hand-wave. That's why this idea got stronger under
-questioning and the other one got weaker.
+tests/direct/                  61 fast in-memory tests (web + LLM mocked)
+tests/integration/             full lifecycle under real multi-validator consensus (studionet)
+demo/run_demo.py               scripted demo agent: compliant + deliberately drifting actions
+frontend/                      Next.js 15 UI: mandate editor, action feed, verdict panel
+deploy/deploy_mandate_guard.py deployment script (genlayer_py)
+demo-listing/                  the frozen fictional "Atlas Air" merchant page
+                               (served via GitHub Pages for the validators to fetch)
+```
 
-## Build scope (3–17 Sep, solo, Python + web)
+Key implementation notes:
 
-**Intelligent Contract**
-- `register_mandate(text)` — store the natural-language mandate
-- `record_action(action_json)` — merchant URL, item, price, timestamp
-- `challenge(action_id)` — open a challenge, post deposit
-- `resolve(challenge_id)` — validators fetch the listing, evaluate against the mandate,
-  return the structured verdict, then slash or release
+- **Deterministic time**: the GenVM clock is pinned to the transaction timestamp, so `challenge_closes_at` windows are consensus-safe.
+- **Settlement arithmetic is u256-native**; every payout leg is recorded in `payouts_json` so the UI shows exactly what moved.
+- **Double-slash impossible**: once a mandate's bond is slashed, no new challenges open, and an in-flight challenge's resolution skips the already-paid bond leg while still returning the deposit. A payout-sum invariant test guards this permanently.
+- **Fail-towards-safety**: if the listing fetch fails or the LLM returns malformed JSON, `resolve()` reverts cleanly with no state or money moved — the caller can retry.
 
-**Frontend**
-- Mandate editor
-- Action feed showing what the agent bought
-- Challenge button and verdict view
+## Honest limitations
 
-**Demo**
-- A scripted agent that drifts out of mandate on purpose
-- Challenge it live, show validators reading the real listing, show the bond slash
+- **The challenger incentive gap.** A failed challenge loses the deposit; a successful one merely returns it. Net zero upside, real downside — so a rational third party never challenges, and only the principal (who is always motivated) realistically will. v1 ships as-is; a bond-bounty split is the obvious next step.
+- **USD/GEN seam.** The mandate prose caps spend in "$250" while bonds and deposits are denominated in GEN-wei; the two are not formally linked. The spend ceiling is a principal-declared wei parameter, never parsed from the prose.
+- **Blunt settlement.** Severity is recorded but does not scale the payout: any out-of-mandate ruling slashes the full bond, whether the deviation was $5 or $200.
+- **Payouts to plain wallets** on studionet finalize via the contract-not-found handler without crediting the recipient EOA (network-side behaviour, reproduced with probes). The on-chain payout record and contract balance movement are the verifiable settlement evidence.
+- **One challenge per action, ever.** Once adjudicated, an action cannot be re-litigated (`open_challenge_id` is never cleared). The name says "open" — the rule is stricter.
 
-Start from `genlayerlabs/genlayer-project-boilerplate`.
+## Setup
 
-## Open questions
+Prerequisites: Python 3.12+, Node 18+, and a funded GenLayer account for anything on-chain.
 
-- Challenge window length. Long enough for a watchdog to notice, short enough that the
-  operator's capital isn't locked forever.
-- Bond sizing relative to the mandate's spend ceiling.
-- What stops frivolous challenges beyond losing the deposit?
-- Equivalence principle: compare `within_mandate` and `clause_violated` only, or include
-  `severity`? Comparing fewer fields is safer for consensus.
+```bash
+# Python environment (contract + tests)
+python -m venv .venv
+source .venv/Scripts/activate        # Windows Git Bash; .venv/bin/activate elsewhere
+pip install -r requirements.txt
 
-## Context: what already exists on GenLayer
+# Frontend
+cd frontend && npm install
+cp .env.example .env.local           # set NEXT_PUBLIC_CONTRACT_ADDRESS (see below)
+npm run dev                          # http://localhost:3000
+```
 
-Confirmed built, do not overlap:
+### Run the fast tests
 
-| Project | Covers |
+```bash
+pytest tests/direct/ -v
+```
+
+61 tests, no network needed — web and LLM calls are mocked. On Windows the tests apply a small compatibility patch (`tests/direct/conftest.py`) for a known gltest file-locking issue.
+
+### Lint the contract
+
+```bash
+genvm-lint check contracts/mandate_guard.py
+```
+
+### Run the demo agent
+
+```bash
+# needs a reachable network; defaults to studionet via gltest.config.yaml
+python demo/run_demo.py
+```
+
+Deploys a fresh MandateGuard, registers the mandate, records a compliant action (refundable Flex Economy $220) and a deliberately drifting one (non-refundable Basic Saver $180), challenges the drift, and waits for real validator consensus. Expect roughly 2 minutes; the `resolve` stage is 55–65s of genuine multi-validator LLM consensus and is the point.
+
+### Frontend → contract wiring
+
+The deployed demo instance:
+
+| | |
 |---|---|
-| Internet Court (MetaMask, BNB Chain, OKX, 20+) | agent-to-agent commerce disputes |
-| Intelligent Oracle | prediction markets, insurance resolution |
-| Rally | AI-validator bot/sybil filtering |
-| Collective Memory | agent marketplace quality layer |
-| Docs examples | football prediction market, DAO proposal compliance, bounty rules, flight-delay insurance, freelance escrow |
+| Network | studionet (chain ID 61999) |
+| RPC | `https://studio.genlayer.com/api` |
+| Contract | [`0xbd70CB985fA5D581aA7b83c1e27EBf3D1293593b`](https://explorer-studio.genlayer.com/) |
 
-Mandate Guard is distinct from Internet Court: that resolves disputes between two agent
-counterparties after a commercial breakdown, this enforces a principal's instructions
-against their own agent.
+Set `NEXT_PUBLIC_CONTRACT_ADDRESS` in `frontend/.env.local` to point the UI at any instance. MetaMask users: add the network manually (RPC above, chain ID `61999`, currency `GEN`) — studionet has no public RPC-registered chain entry in MetaMask's default list, so the app's `wallet_addEthereumChain` flow needs those values supplied.
 
-## Sources
+To redeploy your own instance instead:
 
-- https://cloud.google.com/blog/products/ai-machine-learning/announcing-agents-to-payments-ap2-protocol
-- https://docs.genlayer.com/developers/intelligent-contracts/when-to-use-genlayer
-- https://docs.genlayer.com/understand-genlayer-protocol/core-concepts/optimistic-democracy/finality
-- https://github.com/genlayerlabs/genlayer-project-boilerplate
+```bash
+python deploy/deploy_mandate_guard.py
+```
+
+## The merchant listing
+
+Validators fetch the listing themselves during `resolve()`. The demo uses a frozen static page (fictional "Atlas Air" flight AA-281 BER→LIS, Basic Saver $180 non-refundable vs Flex Economy $220 refundable), published at https://pratikshagayen.github.io/mandate-guard-demo/ with the source in [`demo-listing/`](demo-listing/) and a raw-GitHub fallback URL baked into the demo script. It is frozen through judging so every validator fetch is byte-identical.
+
+## Testing evidence
+
+- `pytest tests/direct/ -v` → 61 passed
+- `genvm-lint check contracts/mandate_guard.py` → Lint passed / Validation passed
+- Integration (studionet, real 5-validator consensus): full lifecycle both verdict directions, contract balance drops by exactly `bond + deposit` on slash and `deposit` on release, asserted on-chain.
+
+`PROGRESS.md` (append-only checkpoint log), `PROJECT_ROADMAP.md`, and `DESIGN_DECISIONS.md` are kept in the repo as the process record.
+
+## License
+
+MIT. Built on the [genlayer-project-boilerplate](https://github.com/genlayerlabs/genlayer-project-boilerplate) (vendor sample contract and its tests were removed during development; the MIT license notice from that boilerplate is retained).
