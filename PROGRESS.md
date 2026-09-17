@@ -866,3 +866,34 @@ Same verdict direction and payout structure as Run 1 (LLM wording differs, as ex
 **Next step:**
 ---
 
+## CP7b-C — Pushed, and the Pages URL is live
+**Date:** 2026-09-17
+**Status:** DONE
+
+**What was done**
+- Committed and pushed the CP7b work to the public repo (principal approved the push): `5b7f3a1..5fb6ce7`, 5 files, 436 insertions, 1 deletion.
+- Enabled GitHub Pages on `main` / `/docs` and confirmed the site is serving.
+
+**Evidence**
+- `git push origin main` → `5b7f3a1..5fb6ce7  main -> main`; commit `5fb6ce7` contains `SUBMISSION_DRAFT.md`, `demo/VIDEO_SHOTLIST.md`, `docs/index.html`, `demo/run_demo.py` and this log.
+- Pushed-tree check via the GitHub API (`git/trees/main?recursive=1`): the four new/changed paths are present, and `grep -c "scratch/"` → **0**, so nothing gitignored leaked into the public repo.
+- Pages: `POST /repos/…/pages` → `html_url: https://pratikshagayen.github.io/mandate-guard/`, source `main` `/docs`, build `1221309003` on commit `5fb6ce7`; `curl -sL -o /dev/null -w "%{http_code}"` → **200**. Repo URL → **200**.
+- `PROGRESS.md` diff before this commit: **76 insertions, 0 deletions** (append-only intact), 868 CRLF line endings and zero lone LFs.
+
+**Blockers**
+- Unchanged from CP7b-B: the demo video and the wallet-gated submit button are both human steps. Everything else on the form has a value ready to paste.
+
+**Question for PM**
+- none
+
+**Deviations from the roadmap**
+- none beyond CP7b-B's `docs/index.html`.
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---
+
