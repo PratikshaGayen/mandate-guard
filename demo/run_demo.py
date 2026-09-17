@@ -13,9 +13,11 @@ caller was a script or a browser — so the rehearsed timing and settlement outc
 are the real ones the live demo will produce.
 
 Usage:
-    python demo/run_demo.py
+    python demo/run_demo.py            # continuous run (rehearsal timing)
+    python demo/run_demo.py --step     # pause between stages for live narration/video
 """
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -46,6 +48,14 @@ MANDATE_TEXT = (
 
 RESOLVE_WAIT = {"wait_interval": 10000, "wait_retries": 60}
 
+STEP_MODE = False  # set by --step: pause for Enter between stages (video narration)
+
+
+def _maybe_pause(label: str) -> None:
+    if STEP_MODE:
+        print(f"\n>>> [PAUSED for narration] next: {label} — press Enter to continue...")
+        input()
+
 
 def _timed(label, fn, **kwargs):
     start = time.monotonic()
@@ -56,6 +66,16 @@ def _timed(label, fn, **kwargs):
 
 
 def main() -> None:
+    global STEP_MODE
+    parser = argparse.ArgumentParser(description="Mandate Guard demo agent")
+    parser.add_argument(
+        "--step",
+        action="store_true",
+        help="pause for Enter between stages (for live narration / video recording)",
+    )
+    args = parser.parse_args()
+    STEP_MODE = args.step
+
     general_config = get_general_config()
     general_config.user_config = load_user_config("gltest.config.yaml")
     plugin_config = PluginConfig()
@@ -72,11 +92,13 @@ def main() -> None:
 
     timings = {}
 
+    _maybe_pause("deploy")
     contract, timings["deploy"] = _timed(
         "deploy", lambda: get_contract_factory("MandateGuard").deploy()
     )
     print(f"Contract:   {contract.address}")
 
+    _maybe_pause("register_mandate")
     tx, timings["register_mandate"] = _timed(
         "register_mandate",
         lambda: contract.register_mandate(
@@ -87,6 +109,7 @@ def main() -> None:
     mandate_id = contract.get_mandate_ids_by_operator(args=[operator.address]).call()[-1]
     print(f"Mandate:    {mandate_id}  (bond {BOND_WEI / 10**18:g} GEN, ceiling ${CEILING_WEI / 10**18:g})")
 
+    _maybe_pause("record_action (compliant)")
     tx, timings["record_compliant"] = _timed(
         "record_action (compliant — Flex Economy $220, refundable)",
         lambda: contract.record_action(
@@ -95,6 +118,7 @@ def main() -> None:
     )
     assert tx_execution_succeeded(tx), "record_action (compliant) failed"
 
+    _maybe_pause("record_action (drifting)")
     tx, timings["record_drifting"] = _timed(
         "record_action (drifting — Basic Saver $180, non-refundable)",
         lambda: contract.record_action(
@@ -107,6 +131,7 @@ def main() -> None:
     drifting_action_id = action_ids[-1]
     print(f"Actions:    {action_ids}  (drifting = {drifting_action_id})")
 
+    _maybe_pause("challenge (drifting action)")
     challenger_contract = get_contract_factory("MandateGuard").build_contract(
         contract_address=contract.address, account=challenger
     )
@@ -118,6 +143,7 @@ def main() -> None:
     challenge_id = contract.get_action(args=[drifting_action_id]).call()["open_challenge_id"]
     print(f"Challenge:  {challenge_id}")
 
+    _maybe_pause("resolve (real fetch + real validator consensus — 55-65s)")
     tx, timings["resolve"] = _timed(
         "resolve (real fetch + real validator consensus)",
         lambda: contract.resolve(args=[challenge_id]).transact(

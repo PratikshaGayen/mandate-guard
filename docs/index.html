@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandate Guard</title>
+<meta name="description" content="Enforce what you actually meant when your AI agent spends your money. A plain-English mandate, a slashable bond, and GenLayer validators that fetch the live listing and rule on it.">
+<style>
+  :root { color-scheme: dark; --fg:#e8e8ee; --muted:#9a9aa8; --line:#2a2a35; --accent:#a78bfa; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0b0b10; color:var(--fg);
+         font:16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; padding: 4rem 1.25rem 5rem; }
+  h1 { font-size: 2.4rem; line-height:1.15; margin:0 0 .75rem; letter-spacing:-.02em; }
+  h2 { font-size: 1.05rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+       margin: 3rem 0 .75rem; font-weight:600; }
+  p { margin: 0 0 1rem; }
+  .lede { font-size:1.15rem; color:#c9c9d6; }
+  ol, ul { padding-left: 1.25rem; margin: 0 0 1rem; }
+  li { margin-bottom:.4rem; }
+  a { color: var(--accent); }
+  code { background:#15151d; border:1px solid var(--line); border-radius:4px;
+         padding:.1rem .35rem; font-size:.9em; }
+  .links { display:flex; flex-wrap:wrap; gap:.6rem; margin-top:1rem; }
+  .links a { border:1px solid var(--line); border-radius:8px; padding:.5rem .85rem;
+             text-decoration:none; color:var(--fg); background:#12121a; }
+  .links a:hover { border-color:var(--accent); }
+  hr { border:0; border-top:1px solid var(--line); margin:3rem 0; }
+  .small { color:var(--muted); font-size:.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mandate Guard</h1>
+  <p class="lede">Enforce what you actually meant when your AI agent spends your money.</p>
+
+  <p>Agent payment rails handle numbers well: price caps, allowlists, spend limits. Half of what
+  people write in an instruction is not a number. <em>"Prefer refundable."</em>
+  <em>"A reputable seller."</em> Nothing in the stack enforces a sentence like that, and in AP2 the
+  thing checking the cart against your intent is your own agent, the part most likely to be
+  compromised.</p>
+
+  <h2>How it works</h2>
+  <ol>
+    <li>You register a mandate in plain English. The operator posts a bond at least as large as the
+        mandate allows spending.</li>
+    <li>The agent transacts immediately. Nothing in the purchase path waits on a judge.</li>
+    <li>Every purchase lands on-chain with its evidence: merchant URL, item, price, timestamps.</li>
+    <li>Anyone can challenge inside a window, paying the exact deposit the contract reports.</li>
+    <li>GenLayer validators fetch the live listing themselves and each re-derive a verdict with
+        their own LLM. Out of mandate, the bond is slashed to the principal. Within mandate, the
+        challenger loses the deposit.</li>
+  </ol>
+
+  <p>The verdict is stored and structured: <code>within_mandate</code>,
+  <code>clause_violated</code>, <code>severity</code>, <code>reasoning</code>, plus every payout
+  leg.</p>
+
+  <h2>Honest limits</h2>
+  <ul>
+    <li>No bounty: a failed challenge loses the deposit and a successful one only returns it, so no
+        third party is actually motivated to challenge. Only the principal is.</li>
+    <li>Settlement is blunt. Severity is recorded but does not scale the payout, so a small
+        deviation costs the whole bond.</li>
+    <li>The mandate caps spend in dollars while the bond and deposit are GEN-wei. The ceiling is a
+        declared parameter, never parsed out of the prose, and the two are not formally linked.</li>
+    <li>An action can be challenged once ever, not once at a time.</li>
+  </ul>
+
+  <h2>Status</h2>
+  <p>Working contract, Next.js UI, 61 direct tests, and integration tests under real five-validator
+  consensus on studionet. The demo judges a non-refundable fare out of mandate and slashes the
+  bond.</p>
+
+  <div class="links">
+    <a href="https://github.com/PratikshaGayen/mandate-guard">Source on GitHub</a>
+    <a href="https://github.com/PratikshaGayen/mandate-guard#readme">README and setup</a>
+    <a href="https://pratikshagayen.github.io/mandate-guard-demo/">Demo merchant listing</a>
+  </div>
+
+  <hr>
+  <p class="small">Built for the GenLayer Agent Tank hackathon, September 2026. The demo merchant
+  page is one we host ourselves, so judging does not depend on a third party's page; the validator
+  fetch is still a real fetch of a real public URL.</p>
+</main>
+</body>
+</html>
