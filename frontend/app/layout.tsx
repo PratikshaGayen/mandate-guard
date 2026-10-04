@@ -3,8 +3,8 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "GenLayer Football Market",
-  description: "AI-powered football match predictions on GenLayer blockchain. Create bets, make predictions, and compete for points.",
+  title: "Mandate Guard",
+  description: "Your agent posts a bond and buys instantly. Anyone can challenge a purchase; GenLayer validators fetch the live listing and rule on whether it fit your plain-English mandate.",
   manifest: "/site.webmanifest",
   icons: {
     icon: [
