@@ -36,10 +36,15 @@ export interface Action {
   item: string;
   price: string;
   purchased_at: string;
+  purchaser: string;
+  receipt_url: string;
+  receipt_sha256: string;
+  receipt_id: string;
   recorded_at: number | string;
   challenge_closes_at: number | string;
   open_challenge_id: string;
   state: string;
+  finalized_at: number | string;
   challenge?: ChallengeSummary;
 }
 

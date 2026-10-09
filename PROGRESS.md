@@ -897,3 +897,42 @@ Same verdict direction and payout structure as Run 1 (LLM wording differs, as ex
 **Next step:**
 ---
 
+
+## CP8 — Steward request: purchases bound to receipts (D17), finalize_action (D18)
+**Date:** 2026-10-09
+**Status:** DONE
+
+**What was done**
+- The Project Explorer submission came back as *more info needed*. Steward Pavel Kolosov (2026-10-04): "bind each recorded purchase to an immutable or authenticated purchase-time artifact that verifies the item, charged amount, purchaser, and timestamp, and add a contract method that finalizes an unchallenged action after its window. Please update the submitted source and tests so both paths can be verified." Principal chose the full fix.
+- **D17** — `record_action(mandate_id, receipt_url, receipt_sha256)`. Validators fetch the receipt in a nondet block, require the SHA-256 of its canonical JSON to match, and must agree byte-for-byte on the extracted fields. The contract then requires purchaser == operator, receipt and listing on one https origin, purchase time inside the mandate's life (600 s skew), and a receipt never bound before. Item, price, purchaser, time and listing now come only from the receipt. Verifying at record time (not at resolve) stops an operator from deleting a receipt later to make challenges impossible.
+- **D18** — permissionless `finalize_action(action_id)`, valid from the exact second `challenge()` stops accepting; OPEN -> UNCHALLENGED with `finalized_at`. State only, no money moves. Supersedes D10.
+- Demo merchant on the Vercel deployment: the frozen listing served byte-identical at `/atlas-air.html`, `POST /api/atlas-air/checkout` (merchant sets item, amount and time), and `GET /api/atlas-air/receipts/<token>` with an HMAC-SHA256-signed token so only checkout can mint a receipt. The secret lives only in the Vercel env.
+- Tests: `tests/direct/conftest.py` gains a receipt helper; existing tests moved to a neutral merchant host (`atlas-air.test`) so listing and receipt mocks cannot shadow each other; 23 new tests in `test_receipts_and_finalize.py`. Integration suite and `demo/run_demo.py` buy through the live merchant (`demo/merchant.py`).
+- Removed the integration test for the D10 view-clock probe: its contract was deleted in STEP 12 (`bbb184a`) so the test could not run, its question was answered at CP4, and D18 makes it moot.
+- Contract redeployed; frontend redeployed against it (Finalize button, receipt link and purchaser in the action feed).
+
+**Evidence**
+- `pytest tests/direct/ -q` -> `84 passed` (61 existing + 23 new). Mutation check: disabling the purchaser check or the finalize window check makes 2 tests fail; contract restored byte-identical.
+- `genvm-lint check contracts/mandate_guard.py` -> `Lint passed (3 checks)` / `Validation passed` / `Methods: 11 (6 view, 5 write)`.
+- Live merchant: receipts deterministic across fetches, served bytes == canonical JSON, Python and TypeScript SHA-256 agree, tampered token -> 404, bad fare / bad purchaser -> 400. Listing on Vercel is byte-identical to the frozen page (2814 bytes, sha256 02b465153472d4e9...).
+- `gltest tests/integration/ -v -s --network studionet` -> 4 passed (compliant lifecycle, drifting lifecycle, receipt-bound purchase finalized after a 60 s window, wrong receipt hash rejected on-chain); 1 failed = the stale view-clock test, since removed.
+- `python demo/run_demo.py` on studionet: both receipts bound, drift `within_mandate: False` quoting the refundable clause, bond 250 GEN to the principal and 25 GEN deposit back to the challenger, compliant `a-000001` -> `UNCHALLENGED`; total 114.9 s.
+- New deployment: `0x4E897E7e665e6846cb851cB450e7106B85af9AA6` (studionet, 5/5 AGREE, tx `0xd2bb6cd8...8603`). Vercel `NEXT_PUBLIC_CONTRACT_ADDRESS` updated; the new address is confirmed in the deployed bundle.
+
+**Blockers**
+- none
+
+**Question for PM**
+- none
+
+**Deviations from the roadmap**
+- D10 superseded by D18 at the steward's request.
+- The demo listing now also lives on the Vercel origin, because the receipt must share the listing's origin. The GitHub Pages copy is unchanged.
+
+---
+### PM review — do not fill in
+**Reviewed:**
+**Verdict:**
+**Notes:**
+**Next step:**
+---

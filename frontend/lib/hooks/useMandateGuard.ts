@@ -145,17 +145,13 @@ export function useRecordAction() {
   return useMutation({
     mutationFn: async ({
       mandateId,
-      merchantUrl,
-      item,
-      price,
-      purchasedAt,
+      receiptUrl,
+      receiptSha256,
       feePresetLevel,
     }: {
       mandateId: string;
-      merchantUrl: string;
-      item: string;
-      price: string;
-      purchasedAt: string;
+      receiptUrl: string;
+      receiptSha256: string;
       feePresetLevel?: FeePresetLevel;
     }) => {
       if (!contract) {
@@ -163,20 +159,37 @@ export function useRecordAction() {
       }
       const feePreset = await contract.estimateFees(
         "record_action",
-        [mandateId, merchantUrl, item, price, purchasedAt],
+        [mandateId, receiptUrl, receiptSha256],
         feePresetLevel
       );
-      return contract.recordAction(
-        mandateId,
-        merchantUrl,
-        item,
-        price,
-        purchasedAt,
-        feePreset
-      );
+      return contract.recordAction(mandateId, receiptUrl, receiptSha256, feePreset);
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["actions", variables.mandateId] });
+    },
+  });
+}
+
+export function useFinalizeAction() {
+  const contract = useMandateGuardContract();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      actionId,
+      feePresetLevel,
+    }: {
+      actionId: string;
+      feePresetLevel?: FeePresetLevel;
+    }) => {
+      if (!contract) {
+        throw new Error("Contract not configured");
+      }
+      const feePreset = await contract.estimateFees("finalize_action", [actionId], feePresetLevel);
+      return contract.finalizeAction(actionId, feePreset);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["actions"] });
     },
   });
 }

@@ -223,3 +223,30 @@ Exactly as `README.md`, frozen:
 4. studionet rounds showed 3 AGREE + 2 IDLE (non-participating) validators per
    transaction — consistent with every prior studionet transaction in this project, not
    a defect.
+
+## D17 — Purchases bound to merchant receipts (steward request, 2026-10-04)
+
+A steward asked that each recorded purchase be bound to an immutable or authenticated
+purchase-time artifact proving the item, charged amount, purchaser and timestamp.
+
+- `record_action(mandate_id, receipt_url, receipt_sha256)` replaces the self-reported
+  `(merchant_url, item, price, purchased_at)` signature (D8).
+- Inside the transaction, validators fetch `receipt_url`, compute SHA-256 over the
+  receipt's canonical JSON (`json.dumps(obj, sort_keys=True, separators=(",", ":"))`),
+  require it to equal the committed hash, and agree byte-for-byte on the extracted fields.
+- The contract then checks: purchaser equals the mandate's operator; the receipt and the
+  listing it names share one https origin; the purchase time falls between the mandate's
+  creation and now (600 s skew either way); the receipt (origin + receipt id) was never
+  bound before.
+- Receipt schema, all strings: `amount`, `currency`, `item`, `listing_url`, `merchant`,
+  `purchased_at` (ISO-8601 with timezone), `purchaser`, `receipt_id`.
+- Demo merchant: Atlas Air on the Vercel deployment. `POST /api/atlas-air/checkout`
+  issues a receipt whose URL token is HMAC-SHA256-signed over fare, purchaser and time,
+  so only checkout can mint one; `GET /api/atlas-air/receipts/<token>` serves it as
+  canonical JSON. The frozen listing is served from the same origin at `/atlas-air.html`.
+
+## D18 — `finalize_action` (supersedes D10)
+
+Permissionless. Allowed only for an OPEN action once `now >= challenge_closes_at` — the
+same second `challenge()` stops accepting. Moves the action to UNCHALLENGED and records
+`finalized_at`. It changes state only; the bond stays posted for the mandate.

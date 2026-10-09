@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Activity, ExternalLink, Gavel, Loader2, Clock } from "lucide-react";
+import { Activity, CheckCircle2, ExternalLink, Gavel, Loader2, Clock, Receipt } from "lucide-react";
 import {
   useMandateActions,
   useMandates,
   useRequiredDeposit,
   useChallengeAction,
+  useFinalizeAction,
 } from "@/lib/hooks/useMandateGuard";
 import { useWallet } from "@/lib/genlayer/wallet";
 import { success, error } from "@/lib/utils/toast";
@@ -16,19 +17,22 @@ import { Badge } from "./ui/badge";
 import { VerdictPanel } from "./VerdictPanel";
 
 /**
- * D10: the contract stores OPEN and never advances it; "window elapsed,
- * unchallenged" is derived here from challenge_closes_at against wall clock.
+ * An OPEN action whose window has elapsed stays OPEN on-chain until anyone calls
+ * finalize_action (D18), which moves it to UNCHALLENGED.
  */
 function effectiveState(a: Action): { label: string; className: string } {
   const nowSec = Math.floor(Date.now() / 1000);
   if (a.state === "OPEN") {
     if (nowSec >= Number(a.challenge_closes_at)) {
       return {
-        label: "UNCHALLENGED (window elapsed)",
+        label: "WINDOW ELAPSED — ready to finalize",
         className: "bg-secondary text-secondary-foreground",
       };
     }
     return { label: "OPEN", className: "bg-green-600 text-white" };
+  }
+  if (a.state === "UNCHALLENGED") {
+    return { label: "FINALIZED — UNCHALLENGED", className: "bg-slate-600 text-white" };
   }
   if (a.state === "CHALLENGED") {
     return { label: "CHALLENGED", className: "bg-amber-500 text-black" };
@@ -95,12 +99,15 @@ function ChallengeButton({ action }: { action: Action }) {
       </Badge>
     );
   }
-  if (windowElapsed) {
+  if (action.state === "UNCHALLENGED") {
     return (
       <Badge variant="outline" className="text-sm">
-        Window elapsed
+        <CheckCircle2 className="mr-1 h-3 w-3" /> Finalized
       </Badge>
     );
+  }
+  if (windowElapsed) {
+    return <FinalizeButton action={action} />;
   }
   return (
     <Button
@@ -118,6 +125,43 @@ function ChallengeButton({ action }: { action: Action }) {
         <>
           <Gavel className="mr-2 h-4 w-4" />
           Challenge{required ? ` (${formatWei(required)} GEN)` : ""}
+        </>
+      )}
+    </Button>
+  );
+}
+
+/** Anyone may finalize once the window has elapsed with no challenge (D18). */
+function FinalizeButton({ action }: { action: Action }) {
+  const { isConnected } = useWallet();
+  const finalizeAction = useFinalizeAction();
+
+  async function handleFinalize() {
+    try {
+      await finalizeAction.mutateAsync({ actionId: action.id });
+      success("Action finalized", { description: "Window closed with no challenge." });
+    } catch (e: any) {
+      error("Finalize failed", e?.message ?? String(e));
+    }
+  }
+
+  return (
+    <Button
+      onClick={handleFinalize}
+      disabled={!isConnected || finalizeAction.isPending}
+      size="sm"
+      variant="outline"
+      className="text-sm"
+    >
+      {finalizeAction.isPending ? (
+        <>
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Finalizing…
+        </>
+      ) : (
+        <>
+          <CheckCircle2 className="mr-2 h-4 w-4" />
+          Finalize (window elapsed)
         </>
       )}
     </Button>
@@ -188,6 +232,22 @@ export function ActionFeed({ mandateId }: { mandateId: string | null }) {
                   >
                     {a.merchant_url} <ExternalLink className="h-3 w-3 inline" />
                   </a>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Receipt className="h-3 w-3 text-muted-foreground" />
+                  <span className="text-muted-foreground">Receipt: </span>
+                  <a
+                    href={a.receipt_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-500 hover:underline flex items-center gap-1"
+                  >
+                    {a.receipt_id} <ExternalLink className="h-3 w-3 inline" />
+                  </a>
+                  <span className="text-muted-foreground break-all">
+                    · bought by {a.purchaser.slice(0, 6)}…{a.purchaser.slice(-4)} · sha256{" "}
+                    {a.receipt_sha256.slice(0, 10)}…
+                  </span>
                 </div>
                 <div className="flex items-center gap-1">
                   <Clock className="h-3 w-3 text-muted-foreground" />

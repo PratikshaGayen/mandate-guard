@@ -45,11 +45,14 @@
     <li>You register a mandate in plain English. The operator posts a bond at least as large as the
         mandate allows spending.</li>
     <li>The agent transacts immediately. Nothing in the purchase path waits on a judge.</li>
-    <li>Every purchase lands on-chain with its evidence: merchant URL, item, price, timestamps.</li>
+    <li>Every purchase is recorded bound to the merchant's receipt. Validators fetch the receipt,
+        check its SHA-256, and take the item, charged amount, purchaser and time from it; nothing
+        about the purchase is self-reported.</li>
     <li>Anyone can challenge inside a window, paying the exact deposit the contract reports.</li>
     <li>GenLayer validators fetch the live listing themselves and each re-derive a verdict with
         their own LLM. Out of mandate, the bond is slashed to the principal. Within mandate, the
         challenger loses the deposit.</li>
+    <li>If nobody challenges, anyone can finalize the action once its window has closed.</li>
   </ol>
 
   <p>The verdict is stored and structured: <code>within_mandate</code>,
@@ -65,17 +68,20 @@
     <li>The mandate caps spend in dollars while the bond and deposit are GEN-wei. The ceiling is a
         declared parameter, never parsed out of the prose, and the two are not formally linked.</li>
     <li>An action can be challenged once ever, not once at a time.</li>
+    <li>The demo merchant is ours. Its receipts are HMAC-signed at checkout, which proves they were
+        issued by the merchant at purchase time, not that a card was charged.</li>
   </ul>
 
   <h2>Status</h2>
-  <p>Working contract, Next.js UI, 61 direct tests, and integration tests under real five-validator
-  consensus on studionet. The demo judges a non-refundable fare out of mandate and slashes the
-  bond.</p>
+  <p>Working contract, Next.js UI, 84 direct tests, and integration tests under real five-validator
+  consensus on studionet. The demo buys two fares, judges the non-refundable one out of mandate and
+  slashes the bond, then finalizes the compliant purchase once its window closes.</p>
 
   <div class="links">
+    <a href="https://mandate-guard-five.vercel.app">Live app</a>
     <a href="https://github.com/PratikshaGayen/mandate-guard">Source on GitHub</a>
     <a href="https://github.com/PratikshaGayen/mandate-guard#readme">README and setup</a>
-    <a href="https://pratikshagayen.github.io/mandate-guard-demo/">Demo merchant listing</a>
+    <a href="https://mandate-guard-five.vercel.app/atlas-air.html">Demo merchant listing</a>
   </div>
 
   <hr>

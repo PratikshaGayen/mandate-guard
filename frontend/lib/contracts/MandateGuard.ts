@@ -152,20 +152,27 @@ class MandateGuard {
     );
   }
 
+  /**
+   * Record a purchase by binding it to the merchant's receipt (D17). Validators
+   * fetch the receipt and check it against the committed SHA-256.
+   */
   async recordAction(
     mandateId: string,
-    merchantUrl: string,
-    item: string,
-    price: string,
-    purchasedAt: string,
+    receiptUrl: string,
+    receiptSha256: string,
     feePreset?: FeePresetEstimate
   ): Promise<TransactionReceipt> {
     return await this.write(
       "record_action",
-      [mandateId, merchantUrl, item, price, purchasedAt],
+      [mandateId, receiptUrl, receiptSha256],
       BigInt(0),
       feePreset
     );
+  }
+
+  /** Permissionless: close an action whose window elapsed unchallenged (D18). */
+  async finalizeAction(actionId: string, feePreset?: FeePresetEstimate): Promise<TransactionReceipt> {
+    return await this.write("finalize_action", [actionId], BigInt(0), feePreset);
   }
 
   async challenge(
