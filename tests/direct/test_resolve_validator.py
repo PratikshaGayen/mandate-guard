@@ -35,7 +35,7 @@ CONTRACT_PATH = "contracts/mandate_guard.py"
 
 @pytest.fixture
 def listing_flex(direct_vm):
-    direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_FLEX})
+    direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_FLEX})
 
 
 class TestValidatorAgreement:
@@ -105,7 +105,7 @@ class TestValidatorRejections:
         # it now shows the non-refundable Basic Saver fare.
         direct_vm._web_mocks.clear()
         direct_vm._llm_mocks.clear()
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_BASIC})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_BASIC})
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_DRIFT))
 
         assert direct_vm.run_validator(leader_result=json.dumps(VERDICT_COMPLIANT)) is False

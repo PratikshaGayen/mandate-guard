@@ -7,9 +7,11 @@ Run with:
 
 from datetime import datetime, timezone
 
-from tests.direct.conftest import to_hex
+from tests.direct.conftest import MERCHANT_LISTING_URL, record_purchase, to_hex
 
 CONTRACT_PATH = "contracts/mandate_guard.py"
+UNUSED_RECEIPT_URL = "https://atlas-air.test/receipts/never-fetched"
+UNUSED_SHA256 = "0" * 64
 
 CEILING_WEI = 250 * 10**18
 BOND_WEI = 250 * 10**18
@@ -28,21 +30,16 @@ def _iso(epoch_seconds: int) -> str:
 
 
 def _register(contract, direct_vm, operator, principal) -> str:
+    # Pin registration before every warp these tests make, so the clock only
+    # moves forward and receipts never predate the mandate (D17).
+    direct_vm.warp("2026-09-05T11:00:00Z")
     direct_vm.sender = operator
     direct_vm.value = BOND_WEI
     return contract.register_mandate(MANDATE_TEXT, _hex(principal), CEILING_WEI, WINDOW_SECONDS)
 
 
-def _record(contract, direct_vm, operator, mandate_id, url="https://example.com/listing"):
-    direct_vm.sender = operator
-    direct_vm.value = 0
-    return contract.record_action(
-        mandate_id,
-        url,
-        "Flex Economy",
-        "$220.00",
-        "2026-09-05T10:00:00Z",  # purchased_at: evidence only (D9)
-    )
+def _record(contract, direct_vm, operator, mandate_id):
+    return record_purchase(contract, direct_vm, operator, mandate_id)
 
 
 class TestCarryForwardA_PrincipalEqualsOperator:
@@ -81,9 +78,7 @@ class TestCarryForwardB_LookupHelpers:
         contract = direct_deploy(CONTRACT_PATH)
         direct_vm.sender = direct_alice
         with direct_vm.expect_revert("Unknown mandate id"):
-            contract.record_action(
-                "m-999999", "https://example.com/", "Item", "$1.00", "2026-09-05T10:00:00Z"
-            )
+            contract.record_action("m-999999", UNUSED_RECEIPT_URL, UNUSED_SHA256)
 
     def test_challenge_unknown_action_id_raises_user_error(
         self, direct_vm, direct_deploy, direct_alice
@@ -121,23 +116,26 @@ class TestRecordAction:
         mandate_id = _register(contract, direct_vm, direct_alice, direct_bob)
 
         direct_vm.warp("2026-09-05T12:00:00Z")
-        action_id = _record(
-            contract, direct_vm, direct_alice, mandate_id,
-            url="https://pratikshagayen.github.io/mandate-guard-demo/",
-        )
+        action_id = _record(contract, direct_vm, direct_alice, mandate_id)
         assert action_id == "a-000001"
 
         a = contract.get_action(action_id)
         assert a["id"] == "a-000001"
         assert a["mandate_id"] == mandate_id
-        assert a["merchant_url"] == "https://pratikshagayen.github.io/mandate-guard-demo/"
+        # Every purchase fact comes from the verified receipt (D17).
+        assert a["merchant_url"] == MERCHANT_LISTING_URL
         assert a["item"] == "Flex Economy"
         assert a["price"] == "$220.00"  # stays a string (D8) — evidence, not a number
-        assert a["purchased_at"] == "2026-09-05T10:00:00Z"  # evidence only (D9)
+        assert a["purchased_at"] == "2026-09-05T12:00:00Z"
+        assert a["purchaser"].lower() == to_hex(direct_alice).lower()
+        assert a["receipt_url"].startswith("https://atlas-air.test/receipts/")
+        assert len(a["receipt_sha256"]) == 64
+        assert a["receipt_id"].startswith("AA-TEST-")
         assert a["recorded_at"] == int(datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc).timestamp())
         assert a["challenge_closes_at"] == a["recorded_at"] + WINDOW_SECONDS
         assert a["open_challenge_id"] == ""
         assert a["state"] == "OPEN"
+        assert a["finalized_at"] == 0
         assert "challenge" not in a
 
         assert contract.get_action_ids_by_mandate(mandate_id) == [action_id]
@@ -151,9 +149,7 @@ class TestRecordAction:
         direct_vm.sender = direct_charlie
         direct_vm.value = 0
         with direct_vm.expect_revert("Not operator"):
-            contract.record_action(
-                mandate_id, "https://example.com/", "Item", "$1.00", "2026-09-05T10:00:00Z"
-            )
+            contract.record_action(mandate_id, UNUSED_RECEIPT_URL, UNUSED_SHA256)
 
     def test_record_action_on_slashed_bond_rejected(
         self, direct_vm, direct_deploy, direct_alice, direct_bob
@@ -167,9 +163,7 @@ class TestRecordAction:
 
         direct_vm.sender = direct_alice
         with direct_vm.expect_revert("Bond not intact"):
-            contract.record_action(
-                mandate_id, "https://example.com/", "Item", "$1.00", "2026-09-05T10:00:00Z"
-            )
+            contract.record_action(mandate_id, UNUSED_RECEIPT_URL, UNUSED_SHA256)
 
     def test_action_ids_indexed_per_mandate(
         self, direct_vm, direct_deploy, direct_alice, direct_bob

@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from tests.direct.conftest import to_hex
+from tests.direct.conftest import record_purchase, to_hex
 
 CONTRACT_PATH = "contracts/mandate_guard.py"
 
@@ -18,7 +18,7 @@ BOND_WEI = 250 * 10**18
 DEPOSIT_WEI = BOND_WEI // 10
 WINDOW_SECONDS = 3600
 
-LISTING_URL = "https://pratikshagayen.github.io/mandate-guard-demo/"
+LISTING_URL = "https://atlas-air.test/fares"  # same origin as its receipts (D17)
 
 MANDATE_TEXT = (
     "You may book one economy flight ticket from Berlin to Lisbon departing "
@@ -69,15 +69,10 @@ def _full_path(direct_vm, direct_deploy, operator, principal, listing_body):
     direct_vm.value = BOND_WEI
     mandate_id = contract.register_mandate(MANDATE_TEXT, _hex(principal), CEILING_WEI, WINDOW_SECONDS)
 
-    direct_vm.value = 0
     if listing_body is LISTING_FLEX:
-        action_id = contract.record_action(
-            mandate_id, LISTING_URL, "Flex Economy", "$220.00", "2026-09-05T10:00:00Z"
-        )
+        action_id = record_purchase(contract, direct_vm, operator, mandate_id, "Flex Economy", "220.00")
     else:
-        action_id = contract.record_action(
-            mandate_id, LISTING_URL, "Basic Saver", "$180.00", "2026-09-05T10:00:00Z"
-        )
+        action_id = record_purchase(contract, direct_vm, operator, mandate_id, "Basic Saver", "180.00")
 
     direct_vm.sender = principal  # anyone may challenge, including the principal
     direct_vm.value = DEPOSIT_WEI
@@ -87,12 +82,12 @@ def _full_path(direct_vm, direct_deploy, operator, principal, listing_body):
 
 @pytest.fixture
 def listing_flex(direct_vm):
-    direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_FLEX})
+    direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_FLEX})
 
 
 @pytest.fixture
 def listing_basic(direct_vm):
-    direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_BASIC})
+    direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_BASIC})
 
 
 class TestLeaderVerdicts:
@@ -178,7 +173,7 @@ class TestD15FailureCases:
             direct_vm, direct_deploy, direct_alice, direct_bob, LISTING_FLEX
         )
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_COMPLIANT))
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 500, "body": "Server Error"})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 500, "body": "Server Error"})
 
         with direct_vm.expect_revert("Resolve failed: unusable_page"):
             contract.resolve(challenge_id)
@@ -190,7 +185,7 @@ class TestD15FailureCases:
             direct_vm, direct_deploy, direct_alice, direct_bob, LISTING_FLEX
         )
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_COMPLIANT))
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": "   "})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": "   "})
 
         with direct_vm.expect_revert("Resolve failed: unusable_page"):
             contract.resolve(challenge_id)

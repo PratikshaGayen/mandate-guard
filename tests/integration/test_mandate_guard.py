@@ -24,12 +24,13 @@ from gltest.utils import extract_contract_address
 from genlayer_py import create_account
 from genlayer_py.types.transactions import TransactionStatus
 
+from demo.merchant import COMPLIANT_FARE, DRIFTING_FARE, buy
+
 BOND_WEI = 250 * 10**18
 CEILING_WEI = 250 * 10**18
 DEPOSIT_WEI = BOND_WEI // 10
 WINDOW_SECONDS = 86400  # production default; no time warping on a live network
-
-LISTING_URL = "https://pratikshagayen.github.io/mandate-guard-demo/"
+SHORT_WINDOW_SECONDS = 60  # for the finalize path, which has to wait the window out
 
 MANDATE_TEXT = (
     "You may book one economy flight ticket from Berlin to Lisbon departing "
@@ -84,11 +85,10 @@ class TestFullLifecycle:
         # The bond is actually held by the contract.
         assert _balance(client, contract.address) == BOND_WEI
 
+        receipt_url, receipt_sha, _ = buy(COMPLIANT_FARE, operator.address)
         tx, t = _timed(
             "record_action (compliant)",
-            lambda: contract.record_action(
-                args=[mandate_id, LISTING_URL, "Flex Economy", "$220.00", "2026-09-20T10:00:00Z"]
-            ).transact(),
+            lambda: contract.record_action(args=[mandate_id, receipt_url, receipt_sha]).transact(),
         )
         assert tx_execution_succeeded(tx)
         action_id = contract.get_action_ids_by_mandate(args=[mandate_id]).call()[0]
@@ -156,11 +156,10 @@ class TestFullLifecycle:
         assert tx_execution_succeeded(tx)
 
         mandate_id = contract.get_mandate_ids_by_operator(args=[operator.address]).call()[0]
+        receipt_url, receipt_sha, _ = buy(DRIFTING_FARE, operator.address)
         tx, _ = _timed(
             "record_action (drifting)",
-            lambda: contract.record_action(
-                args=[mandate_id, LISTING_URL, "Basic Saver", "$180.00", "2026-09-20T10:00:00Z"]
-            ).transact(),
+            lambda: contract.record_action(args=[mandate_id, receipt_url, receipt_sha]).transact(),
         )
         assert tx_execution_succeeded(tx)
         action_id = contract.get_action_ids_by_mandate(args=[mandate_id]).call()[0]
@@ -214,21 +213,64 @@ class TestFullLifecycle:
         assert amounts["deposit_returned_to_challenger"] == DEPOSIT_WEI
 
 
-class TestViewClockOnChain:
-    def test_views_see_transaction_pinned_clock(self):
-        """Closes the D10 open item: does a @gl.public.view on a live network
-        return a meaningful (transaction-pinned) time?"""
-        from pathlib import Path
+class TestReceiptAndFinalize:
+    """D17 and D18 under real consensus: validators fetch the merchant's receipt,
+    and an unchallenged action finalizes once its window has passed."""
 
-        probe_factory = get_contract_factory(
-            contract_file_path="view_clock_probe.py"
+    def _registered(self, window_seconds):
+        operator = get_default_account()
+        principal = create_account()
+        contract, _ = _timed("deploy", lambda: get_contract_factory("MandateGuard").deploy())
+        tx = contract.register_mandate(
+            args=[MANDATE_TEXT, principal.address, CEILING_WEI, window_seconds]
+        ).transact(value=BOND_WEI)
+        assert tx_execution_succeeded(tx)
+        mandate_id = contract.get_mandate_ids_by_operator(args=[operator.address]).call()[0]
+        return contract, operator, mandate_id
+
+    def test_purchase_bound_to_receipt_then_finalized_unchallenged(self):
+        contract, operator, mandate_id = self._registered(SHORT_WINDOW_SECONDS)
+
+        receipt_url, receipt_sha, receipt = buy(COMPLIANT_FARE, operator.address)
+        tx, _ = _timed(
+            "record_action (validators fetch the receipt)",
+            lambda: contract.record_action(args=[mandate_id, receipt_url, receipt_sha]).transact(),
         )
-        probe = probe_factory.deploy()
+        assert tx_execution_succeeded(tx)
+        action_id = contract.get_action_ids_by_mandate(args=[mandate_id]).call()[0]
+        a = contract.get_action(args=[action_id]).call()
+        assert a["item"] == receipt["item"] == "Flex Economy"
+        assert a["price"] == "$220.00"
+        assert a["purchased_at"] == receipt["purchased_at"]
+        assert a["purchaser"].lower() == operator.address.lower()
+        assert a["receipt_id"] == receipt["receipt_id"]
+        assert a["receipt_sha256"] == receipt_sha
+        assert a["merchant_url"] == receipt["listing_url"]
+        assert a["state"] == "OPEN"
 
-        before = int(time.time())
-        view_now = probe.view_now(args=[]).call()
-        after = int(time.time())
-        print(f"[d10] view_now={view_now} wall_clock=[{before},{after}]")
-        # A meaningful clock: within ±1 hour of wall clock. If views returned
-        # epoch 0 or garbage, this fails — that is the D10 answer.
-        assert before - 3600 <= int(view_now) <= after + 3600
+        # Too early: the window is still open.
+        tx = contract.finalize_action(args=[action_id]).transact()
+        assert not tx_execution_succeeded(tx)
+        assert contract.get_action(args=[action_id]).call()["state"] == "OPEN"
+
+        wait = int(a["challenge_closes_at"]) - int(time.time()) + 15
+        if wait > 0:
+            time.sleep(wait)
+        anyone = get_contract_factory("MandateGuard").build_contract(
+            contract_address=contract.address, account=create_account()
+        )
+        tx, _ = _timed(
+            "finalize_action (permissionless)",
+            lambda: anyone.finalize_action(args=[action_id]).transact(),
+        )
+        assert tx_execution_succeeded(tx)
+        a = contract.get_action(args=[action_id]).call()
+        assert a["state"] == "UNCHALLENGED"
+        assert int(a["finalized_at"]) >= int(a["challenge_closes_at"])
+
+    def test_receipt_with_wrong_hash_rejected(self):
+        contract, operator, mandate_id = self._registered(WINDOW_SECONDS)
+        receipt_url, _, _ = buy(DRIFTING_FARE, operator.address)
+        tx = contract.record_action(args=[mandate_id, receipt_url, "ab" * 32]).transact()
+        assert not tx_execution_succeeded(tx)
+        assert contract.get_action_ids_by_mandate(args=[mandate_id]).call() == []

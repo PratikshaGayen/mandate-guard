@@ -5,13 +5,15 @@ Mandate Guard — enforces a natural-language spending mandate against an AI age
 through a posted operator bond, an optimistic challenge window, and
 validator-adjudicated verdicts.
 
-STEP 3 scope: storage schema for the full lifecycle + register_mandate + read-back
-views. record_action / challenge / resolve are later steps and are intentionally
-absent.
+Lifecycle: register_mandate (operator posts the bond) -> record_action (bound to a
+merchant receipt that validators fetch and verify) -> either challenge + resolve
+(verdict and settlement) or finalize_action once the window closes unchallenged.
 
-Design decisions referenced below (D1-D5) are locked in DESIGN_DECISIONS.md.
+Design decisions referenced below (D1-D18) are recorded in DESIGN_DECISIONS.md and
+PROJECT_ROADMAP.md.
 """
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,14 +40,21 @@ class Mandate:
 class Action:
     id: str
     mandate_id: str
+    # D17: merchant_url, item, price, purchased_at and purchaser all come from
+    # the merchant receipt verified at record time, never from the caller.
     merchant_url: str
     item: str
     price: str
     purchased_at: str
+    purchaser: str
+    receipt_url: str
+    receipt_sha256: str
+    receipt_id: str
     recorded_at: u256
     challenge_closes_at: u256
     open_challenge_id: str
     state: str
+    finalized_at: u256
 
 
 @allow_storage
@@ -78,6 +87,107 @@ CHALLENGE_OPEN = "OPEN"
 CHALLENGE_UPHELD = "RESOLVED_UPHELD"  # action was out of mandate; deposit returned
 CHALLENGE_REJECTED = "RESOLVED_REJECTED"  # action within mandate; deposit forfeited
 
+# D17: every field a merchant receipt must carry, all as non-empty strings.
+RECEIPT_FIELDS = (
+    "amount",
+    "currency",
+    "item",
+    "listing_url",
+    "merchant",
+    "purchased_at",
+    "purchaser",
+    "receipt_id",
+)
+# Tolerance between the merchant's clock and the transaction's pinned clock.
+RECEIPT_CLOCK_SKEW_SECONDS = 600
+
+
+# ── Receipt helpers (D17) ─────────────────────────────────────────────────────
+
+def _canonical_json(obj) -> str:
+    """The exact string a receipt hash is computed over.
+
+    Hashing a canonical form rather than raw response bytes keeps the hash stable
+    across transport differences (validators' fetches have reported different
+    byte counts than curl for the same static page).
+    """
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def _https_origin(url: str) -> str:
+    """'https://host[:port]' lowercased, or '' if the URL is not plain https."""
+    if not url.startswith("https://"):
+        return ""
+    host = url[len("https://"):].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if host == "" or "@" in host:
+        return ""
+    return "https://" + host.lower()
+
+
+def _parse_iso_utc(value: str) -> int:
+    """Epoch seconds for an ISO-8601 timestamp with a timezone, or -1 if invalid."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return -1
+    if parsed.tzinfo is None:
+        return -1
+    return int(parsed.timestamp())
+
+
+def _is_sha256_hex(value: str) -> bool:
+    if len(value) != 64:
+        return False
+    for ch in value:
+        if ch not in "0123456789abcdef":
+            return False
+    return True
+
+
+def _fetch_receipt_or_error(receipt_url: str, receipt_sha256: str) -> str:
+    """Fetch a merchant receipt, check it against the committed hash, extract it.
+
+    Runs inside the non-deterministic block and never raises. Returns the bound
+    receipt fields as canonical JSON, or an {"error": "<category>"} marker.
+    The receipt is deterministic data, so leader and validators must produce
+    byte-identical output.
+    """
+    try:
+        res = gl.nondet.web.get(receipt_url)
+    except Exception:
+        return _canonical_json({"error": "receipt_fetch_failed"})
+    status = int(res.status)
+    body = res.body
+    text = body.decode("utf-8", errors="replace") if body is not None else ""
+    if status < 200 or status >= 300 or len(text.strip()) == 0:
+        return _canonical_json({"error": "receipt_unusable"})
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return _canonical_json({"error": "receipt_not_json"})
+    if not isinstance(obj, dict):
+        return _canonical_json({"error": "receipt_not_json"})
+    digest = hashlib.sha256(_canonical_json(obj).encode("utf-8")).hexdigest()
+    if digest != receipt_sha256:
+        return _canonical_json({"error": "receipt_hash_mismatch"})
+    for field in RECEIPT_FIELDS:
+        value = obj.get(field)
+        if not isinstance(value, str) or value.strip() == "":
+            return _canonical_json({"error": "receipt_missing_" + field})
+    return _canonical_json({field: obj[field] for field in RECEIPT_FIELDS})
+
+
+def _receipt_validator(leader_result, receipt_url: str, receipt_sha256: str) -> bool:
+    """Independently re-fetch the receipt and require byte-identical extraction."""
+    if not isinstance(leader_result, gl.vm.Return):
+        return False
+    raw = leader_result.calldata
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str):
+        return False
+    return raw == _fetch_receipt_or_error(receipt_url, receipt_sha256)
+
 
 # ── Non-deterministic adjudication helpers ────────────────────────────────────
 # These run inside the non-deterministic block only. They never raise: every
@@ -107,10 +217,12 @@ def _build_verdict_prompt(mandate_text: str, action_facts: dict, listing_text: s
         "spending mandate. Judge every clause of the mandate, both numeric limits and "
         "judgment calls.\n\n"
         "MANDATE (plain English):\n" + mandate_text + "\n\n"
-        "RECORDED ACTION:\n"
+        "RECORDED ACTION (taken from a merchant receipt that validators fetched and "
+        "hash-verified when the purchase was recorded):\n"
         "item: " + action_facts["item"] + "\n"
-        "price: " + action_facts["price"] + "\n"
+        "price charged: " + action_facts["price"] + "\n"
         "purchased at: " + action_facts["purchased_at"] + "\n"
+        "receipt id: " + action_facts["receipt_id"] + "\n"
         "listing url: " + action_facts["merchant_url"] + "\n\n"
         "LIVE LISTING CONTENT fetched from the listing url just now:\n"
         + listing_text + "\n\n"
@@ -258,6 +370,10 @@ class MandateGuard(gl.Contract):
     action_ids_by_mandate: TreeMap[str, str]
     challenge_ids_by_action: TreeMap[str, str]
 
+    # D17: "<merchant origin>|<receipt_id>" -> action_id. A purchase is
+    # recordable exactly once.
+    bound_receipts: TreeMap[str, str]
+
     mandate_counter: u256
     action_counter: u256
     challenge_counter: u256
@@ -348,11 +464,16 @@ class MandateGuard(gl.Contract):
     def record_action(
         self,
         mandate_id: str,
-        merchant_url: str,
-        item: str,
-        price: str,
-        purchased_at: str,
+        receipt_url: str,
+        receipt_sha256: str,
     ) -> str:
+        """Record a purchase by binding it to the merchant's receipt (D17).
+
+        Validators fetch `receipt_url`, require its canonical-JSON SHA-256 to equal
+        `receipt_sha256`, and agree byte-for-byte on the extracted fields. The
+        item, charged amount, purchaser, purchase time and listing come from the
+        receipt alone; nothing about the purchase is self-reported by the caller.
+        """
         mandate = self._get_mandate_or_raise(mandate_id)
         if gl.message.sender_address != mandate.operator:
             raise gl.vm.UserError(
@@ -362,11 +483,58 @@ class MandateGuard(gl.Contract):
             raise gl.vm.UserError(
                 "Bond not intact: every recorded action must be backed by a live bond"
             )
+        receipt_origin = _https_origin(receipt_url)
+        if receipt_origin == "":
+            raise gl.vm.UserError("Bad receipt URL: the receipt must be served over https")
+        committed_sha256 = receipt_sha256.strip().lower()
+        if not _is_sha256_hex(committed_sha256):
+            raise gl.vm.UserError("Bad receipt hash: expected 64 hex characters (SHA-256)")
 
-        # D9: the window is derived exclusively from the transaction's pinned
-        # clock. `purchased_at` is caller-supplied evidence — stored and shown,
-        # never used in window arithmetic.
-        now = u256(int(datetime.now(timezone.utc).timestamp()))
+        def leader_fn() -> str:
+            return _fetch_receipt_or_error(receipt_url, committed_sha256)
+
+        def validator_fn(leader_result) -> bool:
+            return _receipt_validator(leader_result, receipt_url, committed_sha256)
+
+        receipt = json.loads(gl.vm.run_nondet_unsafe(leader_fn, validator_fn))
+        if "error" in receipt:
+            raise gl.vm.UserError(
+                "Receipt rejected: " + receipt["error"] + "; nothing recorded"
+            )
+
+        # Deterministic checks on the agreed receipt.
+        if _https_origin(receipt["listing_url"]) != receipt_origin:
+            raise gl.vm.UserError(
+                "Receipt rejected: the receipt must come from the same https origin as "
+                "the listing it names"
+            )
+        if receipt["purchaser"].lower() != mandate.operator.as_hex.lower():
+            raise gl.vm.UserError(
+                "Receipt rejected: the purchaser on the receipt is not this mandate's operator"
+            )
+        purchased_epoch = _parse_iso_utc(receipt["purchased_at"])
+        if purchased_epoch < 0:
+            raise gl.vm.UserError(
+                "Receipt rejected: purchased_at is not an ISO-8601 timestamp with a timezone"
+            )
+        # D9 still holds: the window comes from the pinned clock, never from the
+        # receipt. The receipt time only has to fall inside the mandate's life.
+        now = int(datetime.now(timezone.utc).timestamp())
+        if purchased_epoch < int(mandate.created_at) - RECEIPT_CLOCK_SKEW_SECONDS:
+            raise gl.vm.UserError("Receipt rejected: the purchase predates the mandate")
+        if purchased_epoch > now + RECEIPT_CLOCK_SKEW_SECONDS:
+            raise gl.vm.UserError("Receipt rejected: the purchase is timestamped in the future")
+        receipt_key = receipt_origin + "|" + receipt["receipt_id"]
+        already = self.bound_receipts.get(receipt_key)
+        if already is not None:
+            raise gl.vm.UserError(
+                "Receipt rejected: this receipt is already bound to action " + already
+            )
+
+        if receipt["currency"] == "USD":
+            price = "$" + receipt["amount"]
+        else:
+            price = receipt["amount"] + " " + receipt["currency"]
 
         self.action_counter = u256(int(self.action_counter) + 1)
         action_id = "a-{:06d}".format(int(self.action_counter))
@@ -374,21 +542,49 @@ class MandateGuard(gl.Contract):
         self.actions[action_id] = Action(
             id=action_id,
             mandate_id=mandate_id,
-            merchant_url=merchant_url,
-            item=item,
+            merchant_url=receipt["listing_url"],
+            item=receipt["item"],
             price=price,
-            purchased_at=purchased_at,
-            recorded_at=now,
-            challenge_closes_at=u256(int(now) + int(mandate.challenge_window_seconds)),
+            purchased_at=receipt["purchased_at"],
+            purchaser=receipt["purchaser"],
+            receipt_url=receipt_url,
+            receipt_sha256=committed_sha256,
+            receipt_id=receipt["receipt_id"],
+            recorded_at=u256(now),
+            challenge_closes_at=u256(now + int(mandate.challenge_window_seconds)),
             open_challenge_id="",
             state=ACTION_OPEN,
+            finalized_at=u256(0),
         )
+        self.bound_receipts[receipt_key] = action_id
 
         id_list = json.loads(self.action_ids_by_mandate.get(mandate_id) or "[]")
         id_list.append(action_id)
         self.action_ids_by_mandate[mandate_id] = json.dumps(id_list)
 
         return action_id
+
+    @gl.public.write
+    def finalize_action(self, action_id: str) -> dict:
+        """Close an action whose challenge window elapsed with no challenge (D18).
+
+        Permissionless. Valid from the deadline second onward, which is exactly
+        when challenge() stops accepting, so no instant allows both or neither.
+        """
+        action = self._get_action_or_raise(action_id)
+        if action.state != ACTION_OPEN:
+            raise gl.vm.UserError(
+                "Not finalizable: only an open, unchallenged action can be finalized "
+                "(state is " + action.state + ")"
+            )
+        now = int(datetime.now(timezone.utc).timestamp())
+        if now < int(action.challenge_closes_at):
+            raise gl.vm.UserError(
+                "Window open: the challenge window has not elapsed yet"
+            )
+        action.state = ACTION_UNCHALLENGED
+        action.finalized_at = u256(now)
+        return {"action_id": action_id, "state": action.state, "finalized_at": now}
 
     @gl.public.write.payable
     def challenge(self, action_id: str) -> str:
@@ -466,6 +662,7 @@ class MandateGuard(gl.Contract):
             "item": action.item,
             "price": action.price,
             "purchased_at": action.purchased_at,
+            "receipt_id": action.receipt_id,
             "merchant_url": action.merchant_url,
         }
 
@@ -590,9 +787,9 @@ class MandateGuard(gl.Contract):
     @gl.public.view
     def get_action(self, action_id: str) -> dict:
         a = self._get_action_or_raise(action_id)
-        # D10: `state` is the stored state; the "window elapsed, unchallenged"
-        # transition is derived by the frontend from `challenge_closes_at` vs
-        # wall clock. Views never advance stored state.
+        # `state` is the stored state. An OPEN action whose window has elapsed
+        # stays OPEN until someone calls finalize_action (D18); views never
+        # advance stored state.
         out = {
             "id": a.id,
             "mandate_id": a.mandate_id,
@@ -600,10 +797,15 @@ class MandateGuard(gl.Contract):
             "item": a.item,
             "price": a.price,
             "purchased_at": a.purchased_at,
+            "purchaser": a.purchaser,
+            "receipt_url": a.receipt_url,
+            "receipt_sha256": a.receipt_sha256,
+            "receipt_id": a.receipt_id,
             "recorded_at": int(a.recorded_at),
             "challenge_closes_at": int(a.challenge_closes_at),
             "open_challenge_id": a.open_challenge_id,
             "state": a.state,
+            "finalized_at": int(a.finalized_at),
         }
         if a.open_challenge_id != "":
             c = self._get_challenge_or_raise(a.open_challenge_id)

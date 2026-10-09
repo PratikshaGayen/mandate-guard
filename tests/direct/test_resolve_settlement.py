@@ -52,7 +52,7 @@ class TestSettlementOutOfMandate:
         self, direct_vm, direct_deploy, direct_alice, direct_bob, payout_capture
     ):
         """within_mandate == false: full bond → principal, deposit → challenger."""
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_BASIC})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_BASIC})
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_DRIFT))
         direct_vm.mock_llm(r"CLAUSE-EQUIVALENCE-CHECK", json.dumps({"same": True}))
         contract, challenge_id = _full_path(
@@ -77,7 +77,7 @@ class TestSettlementOutOfMandate:
     def test_states_and_recorded_outcome_after_slash(
         self, direct_vm, direct_deploy, direct_alice, direct_bob, payout_capture
     ):
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_BASIC})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_BASIC})
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_DRIFT))
         direct_vm.mock_llm(r"CLAUSE-EQUIVALENCE-CHECK", json.dumps({"same": True}))
         contract, challenge_id = _full_path(
@@ -111,7 +111,7 @@ class TestSettlementWithinMandate:
         self, direct_vm, direct_deploy, direct_alice, direct_bob, payout_capture
     ):
         """within_mandate == true: deposit → operator, bond untouched."""
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_FLEX})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_FLEX})
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_COMPLIANT))
         direct_vm.mock_llm(r"CLAUSE-EQUIVALENCE-CHECK", json.dumps({"same": True}))
         contract, challenge_id = _full_path(
@@ -148,7 +148,7 @@ class TestD14ResolveGuard:
     def test_double_resolution_rejected(
         self, direct_vm, direct_deploy, direct_alice, direct_bob, payout_capture
     ):
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_FLEX})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_FLEX})
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_COMPLIANT))
         direct_vm.mock_llm(r"CLAUSE-EQUIVALENCE-CHECK", json.dumps({"same": True}))
         contract, challenge_id = _full_path(
@@ -172,7 +172,7 @@ class TestD14ResolveGuard:
         self, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie, payout_capture
     ):
         """D14: anyone may crank resolve — here an uninvolved third party does."""
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_FLEX})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_FLEX})
         direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_COMPLIANT))
         direct_vm.mock_llm(r"CLAUSE-EQUIVALENCE-CHECK", json.dumps({"same": True}))
         contract, challenge_id = _full_path(
@@ -208,7 +208,7 @@ class TestD15NoSettleOnFailure:
         assert contract.get_mandate(mandate_id)["bond_intact"] is True
 
         # And the caller can retry successfully once the page is reachable.
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_FLEX})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_FLEX})
         outcome = contract.resolve(challenge_id)
         assert outcome["verdict"]["within_mandate"] is True
         assert len(payout_capture) == 1

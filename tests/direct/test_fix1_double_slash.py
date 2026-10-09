@@ -14,6 +14,8 @@ import json
 
 import pytest
 
+from tests.direct.conftest import record_purchase
+
 from tests.direct.test_resolve_leader import (
     BOND_WEI,
     CEILING_WEI,
@@ -50,13 +52,8 @@ def _mandate_with_two_drifting_actions(contract, direct_vm, operator, principal)
     direct_vm.value = BOND_WEI
     mandate_id = contract.register_mandate(MANDATE_TEXT, _hex(principal), CEILING_WEI, WINDOW_SECONDS)
 
-    direct_vm.value = 0
-    action_1 = contract.record_action(
-        mandate_id, LISTING_URL, "Basic Saver", "$180.00", "2026-09-05T10:00:00Z"
-    )
-    action_2 = contract.record_action(
-        mandate_id, LISTING_URL, "Basic Saver", "$180.00", "2026-09-05T10:05:00Z"
-    )
+    action_1 = record_purchase(contract, direct_vm, operator, mandate_id, "Basic Saver", "180.00")
+    action_2 = record_purchase(contract, direct_vm, operator, mandate_id, "Basic Saver", "180.00")
     return mandate_id, action_1, action_2
 
 
@@ -73,7 +70,7 @@ def _resolve_out_of_mandate(direct_vm, contract, caller, challenge_id):
 
 
 def _mock_drifting(direct_vm):
-    direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_BASIC})
+    direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_BASIC})
     direct_vm.mock_llm(r"adjudicating", json.dumps(VERDICT_DRIFT))
     direct_vm.mock_llm(r"CLAUSE-EQUIVALENCE-CHECK", json.dumps({"same": True}))
 
@@ -174,7 +171,7 @@ class TestD16DoubleSlash:
 class TestSeverityClamp:
     def _resolve_and_read_severity(self, direct_vm, direct_deploy, direct_alice, direct_bob, sev):
         contract = direct_deploy(CONTRACT_PATH)
-        direct_vm.mock_web(r"pratikshagayen\.github\.io", {"status": 200, "body": LISTING_BASIC})
+        direct_vm.mock_web(r"atlas-air\.test/fares", {"status": 200, "body": LISTING_BASIC})
         verdict = dict(VERDICT_DRIFT)
         verdict["severity"] = sev
         direct_vm.mock_llm(r"adjudicating", json.dumps(verdict))
@@ -185,9 +182,8 @@ class TestSeverityClamp:
         mandate_id = contract.register_mandate(
             MANDATE_TEXT, _hex(direct_bob), CEILING_WEI, WINDOW_SECONDS
         )
-        direct_vm.value = 0
-        action_id = contract.record_action(
-            mandate_id, LISTING_URL, "Basic Saver", "$180.00", "2026-09-05T10:00:00Z"
+        action_id = record_purchase(
+            contract, direct_vm, direct_alice, mandate_id, "Basic Saver", "180.00"
         )
         challenge_id = _challenge(direct_vm, contract, direct_bob, action_id)
         contract.resolve(challenge_id)

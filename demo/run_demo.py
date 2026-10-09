@@ -1,9 +1,11 @@
-"""Scripted demo agent for Mandate Guard — STEP 11 rehearsal (checkpoint CP6).
+"""Scripted demo agent for Mandate Guard.
 
 Standalone script, not part of the contract. Deploys MandateGuard fresh, registers
-a mandate with a bond, records the compliant action, then records the deliberately
-drifting action from DESIGN_DECISIONS.md — then challenges the drifting action and
-waits for resolve() to slash the bond, exactly as the live demo will.
+a mandate with a bond, then buys two fares from the Atlas Air demo merchant and
+records each one bound to the merchant's receipt (D17): the compliant Flex Economy
+and the deliberately drifting Basic Saver. It challenges the drift and waits for
+resolve() to slash the bond, then waits out the 120-second window and finalizes
+the unchallenged compliant purchase (D18). Both paths, end to end, on-chain.
 
 The `challenge` and `resolve` calls here use a genlayer_py account directly rather
 than a browser click, because a real MetaMask signature needs a funded human wallet
@@ -32,12 +34,14 @@ from gltest.assertions import tx_execution_succeeded  # noqa: E402
 from genlayer_py import create_account  # noqa: E402
 from genlayer_py.types.transactions import TransactionStatus  # noqa: E402
 
+from demo.merchant import COMPLIANT_FARE, DRIFTING_FARE, buy  # noqa: E402
+
 BOND_WEI = 250 * 10**18
 CEILING_WEI = 250 * 10**18
 DEPOSIT_WEI = BOND_WEI // 10
-WINDOW_SECONDS = 86400  # production default
-
-LISTING_URL = "https://pratikshagayen.github.io/mandate-guard-demo/"
+# Short enough to finalize the compliant purchase inside one run; still ample to
+# challenge the drift (the challenge lands ~15s after it is recorded).
+WINDOW_SECONDS = 120
 
 MANDATE_TEXT = (
     "You may book one economy flight ticket from Berlin to Lisbon departing "
@@ -109,27 +113,29 @@ def main() -> None:
     mandate_id = contract.get_mandate_ids_by_operator(args=[operator.address]).call()[-1]
     print(f"Mandate:    {mandate_id}  (bond {BOND_WEI / 10**18:g} GEN, ceiling ${CEILING_WEI / 10**18:g})")
 
-    _maybe_pause("record_action (compliant)")
+    _maybe_pause("buy + record_action (compliant)")
+    receipt_url, receipt_sha, receipt = buy(COMPLIANT_FARE, operator.address)
+    print(f"Receipt:    {receipt['receipt_id']}  {receipt['item']} ${receipt['amount']}  sha256 {receipt_sha[:16]}…")
     tx, timings["record_compliant"] = _timed(
         "record_action (compliant — Flex Economy $220, refundable)",
-        lambda: contract.record_action(
-            args=[mandate_id, LISTING_URL, "Flex Economy", "$220.00", "2026-09-20T10:00:00Z"]
-        ).transact(),
+        lambda: contract.record_action(args=[mandate_id, receipt_url, receipt_sha]).transact(),
     )
     assert tx_execution_succeeded(tx), "record_action (compliant) failed"
 
-    _maybe_pause("record_action (drifting)")
+    _maybe_pause("buy + record_action (drifting)")
+    receipt_url, receipt_sha, receipt = buy(DRIFTING_FARE, operator.address)
+    print(f"Receipt:    {receipt['receipt_id']}  {receipt['item']} ${receipt['amount']}  sha256 {receipt_sha[:16]}…")
     tx, timings["record_drifting"] = _timed(
         "record_action (drifting — Basic Saver $180, non-refundable)",
-        lambda: contract.record_action(
-            args=[mandate_id, LISTING_URL, "Basic Saver", "$180.00", "2026-09-20T10:05:00Z"]
-        ).transact(),
+        lambda: contract.record_action(args=[mandate_id, receipt_url, receipt_sha]).transact(),
     )
     assert tx_execution_succeeded(tx), "record_action (drifting) failed"
 
     action_ids = contract.get_action_ids_by_mandate(args=[mandate_id]).call()
-    drifting_action_id = action_ids[-1]
+    compliant_action_id, drifting_action_id = action_ids[0], action_ids[-1]
+    drift = contract.get_action(args=[drifting_action_id]).call()
     print(f"Actions:    {action_ids}  (drifting = {drifting_action_id})")
+    print(f"Bound:      {drift['item']} {drift['price']} bought by {drift['purchaser']} at {drift['purchased_at']}")
 
     _maybe_pause("challenge (drifting action)")
     challenger_contract = get_contract_factory("MandateGuard").build_contract(
@@ -157,6 +163,21 @@ def main() -> None:
     verdict = contract.get_challenge(args=[challenge_id]).call()
     mandate_after = contract.get_mandate(args=[mandate_id]).call()
 
+    # D18: the compliant purchase was never challenged. Once its window has
+    # passed, anyone can finalize it — here, the challenger account.
+    closes_at = int(contract.get_action(args=[compliant_action_id]).call()["challenge_closes_at"])
+    wait = closes_at - int(time.time()) + 15  # margin for the transaction's pinned clock
+    if wait > 0:
+        print(f"\nWaiting {wait}s for the compliant purchase's window to close…")
+        time.sleep(wait)
+    _maybe_pause("finalize_action (compliant, unchallenged)")
+    tx, timings["finalize"] = _timed(
+        "finalize_action (compliant, unchallenged)",
+        lambda: challenger_contract.finalize_action(args=[compliant_action_id]).transact(),
+    )
+    assert tx_execution_succeeded(tx), "finalize_action failed"
+    compliant_after = contract.get_action(args=[compliant_action_id]).call()
+
     print()
     print("=== VERDICT ===")
     print(f"  within_mandate:   {verdict['verdict_within_mandate']}")
@@ -166,6 +187,9 @@ def main() -> None:
     print(f"  challenge state:  {verdict['state']}")
     print(f"  bond_intact:      {mandate_after['bond_intact']}")
     print(f"  payouts:          {verdict['payouts']}")
+    print()
+    print("=== FINALIZED ===")
+    print(f"  {compliant_action_id}: {compliant_after['state']} at {compliant_after['finalized_at']}")
 
     total = sum(timings.values())
     print()
@@ -177,8 +201,12 @@ def main() -> None:
     assert verdict["verdict_within_mandate"] is False, "expected the drifting action to be judged out of mandate"
     assert verdict["state"] == "RESOLVED_UPHELD"
     assert mandate_after["bond_intact"] is False
+    assert compliant_after["state"] == "UNCHALLENGED"
     print()
-    print("Rehearsal complete: drifting action correctly ruled out of mandate, bond slashed.")
+    print(
+        "Demo complete: drift ruled out of mandate and the bond slashed; the compliant "
+        "purchase finalized unchallenged."
+    )
 
 
 if __name__ == "__main__":

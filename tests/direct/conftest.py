@@ -1,6 +1,10 @@
 """Shared helpers for direct mode tests."""
 
+import hashlib
+import itertools
+import json
 import os
+import re
 
 
 def _patch_windows_stdin_injection() -> None:
@@ -100,14 +104,70 @@ _patch_windows_stdin_injection()
 
 
 def to_hex(addr_bytes):
-    """Convert address bytes to checksummed hex matching contract output.
+    """Convert address bytes to EIP-55 checksummed hex matching contract output.
 
-    The contract's get_bets()/get_points() return keys via Address.as_hex,
-    which produces EIP-55 checksummed hex. Call after direct_deploy so the
-    SDK is on sys.path.
+    Call after direct_deploy so the SDK is on sys.path.
     """
     if hasattr(addr_bytes, "as_hex"):
         return addr_bytes.as_hex
     from genlayer.py.types import Address
 
     return Address(addr_bytes).as_hex
+
+
+# ── Merchant receipts (D17) ──────────────────────────────────────────────────
+# A fictional merchant on a neutral test host. The listing and its receipts share
+# one https origin, as record_action requires, on distinct paths so listing mocks
+# and receipt mocks never shadow each other.
+
+MERCHANT_ORIGIN = "https://atlas-air.test"
+MERCHANT_LISTING_URL = MERCHANT_ORIGIN + "/fares"
+MERCHANT_LISTING_PATTERN = r"atlas-air\.test/fares"
+
+_receipt_seq = itertools.count(1)
+
+
+def canonical_json(obj) -> str:
+    """Same canonical form the contract hashes."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def receipt_sha256(receipt: dict) -> str:
+    return hashlib.sha256(canonical_json(receipt).encode("utf-8")).hexdigest()
+
+
+def make_receipt(purchaser_hex, item, amount, purchased_at, **overrides) -> dict:
+    receipt = {
+        "amount": amount,
+        "currency": "USD",
+        "item": item,
+        "listing_url": MERCHANT_LISTING_URL,
+        "merchant": "Atlas Air",
+        "purchased_at": purchased_at,
+        "purchaser": purchaser_hex,
+        "receipt_id": "AA-TEST-%06d" % next(_receipt_seq),
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def receipt_url_for(receipt: dict, origin: str = MERCHANT_ORIGIN) -> str:
+    return origin + "/receipts/" + receipt["receipt_id"]
+
+
+def mock_receipt(direct_vm, url: str, receipt, status: int = 200) -> None:
+    body = receipt if isinstance(receipt, str) else canonical_json(receipt)
+    direct_vm.mock_web(re.escape(url) + "$", {"status": status, "body": body})
+
+
+def record_purchase(contract, direct_vm, operator, mandate_id, item="Flex Economy",
+                    amount="220.00", **receipt_overrides):
+    """Issue a merchant receipt for `operator` at the VM's current time, serve it,
+    and record it. Returns the new action id."""
+    purchased_at = receipt_overrides.pop("purchased_at", direct_vm._datetime)
+    receipt = make_receipt(to_hex(operator), item, amount, purchased_at, **receipt_overrides)
+    url = receipt_url_for(receipt)
+    mock_receipt(direct_vm, url, receipt)
+    direct_vm.sender = operator
+    direct_vm.value = 0
+    return contract.record_action(mandate_id, url, receipt_sha256(receipt))
